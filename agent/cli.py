@@ -24,7 +24,7 @@ def main(argv=None):
 
     llm = LLM("agent", use_cache=False)
     agent = Agent(prompt_path=args.prompt, tools_path=args.tools, llm=llm)
-    print(f"Riverside Family Clinic scheduling assistant ({llm.cfg.model}). Clinic date: {TODAY}.")
+    print(f"2care.ai Automated Clinic scheduling assistant ({llm.cfg.model}). Clinic date: {TODAY}.")
     print("Type /state to see conversation state, /quit to exit.\n")
     while True:
         try:
