@@ -88,7 +88,8 @@ class Loop:
     @property
     def regression_ids(self) -> list[str]:
         a = self.args
-        return sorted(getattr(a, "regression_check", None) or []) if getattr(a, "reduced", False) else []
+        # Order kept as given: the most safety-critical checks run first if the budget runs out.
+        return list(getattr(a, "regression_check", None) or []) if getattr(a, "reduced", False) else []
 
     def failing_ids(self) -> list[str]:
         """Main scenarios that failed at least once in the baseline (reduced mode re-runs these at N)."""
@@ -142,6 +143,8 @@ class Loop:
             code = getattr(self, f"phase_{phase}")(state)
             if code:
                 self.save_state(state)
+                if phase in ("candidate_eval", "confirm") and state.get("candidate"):
+                    self.write_incomplete_report(state, phase, code)
                 self.log(f"Stopped in phase '{phase}' (code {code}). Re-run the same command to resume."
                          + (" Daily quota reached." if code == 3 else ""))
                 return code
@@ -194,9 +197,11 @@ class Loop:
             state["reduced_sets"] = {"failing": failing, "regression": regression}
             code = self.ensure_eval([s for s in self.main if s.id in failing], cand["prompt"], cand["tools"],
                                     d["candidate"])
-            if not code:
-                code = self.ensure_eval([s for s in self.main if s.id in regression], cand["prompt"],
-                                        cand["tools"], d["candidate"], n=1)
+            by_id = {s.id: s for s in self.main}
+            for sid in regression:  # one at a time, in priority order
+                if code:
+                    break
+                code = self.ensure_eval([by_id[sid]], cand["prompt"], cand["tools"], d["candidate"], n=1)
             return code
         code = self.ensure_eval(self.main, cand["prompt"], cand["tools"], d["candidate"])
         if not code and self.args.with_heldout:
@@ -261,6 +266,34 @@ class Loop:
                  ("" if result.accepted else f"; {'; '.join(result.reasons)}"))
         return 0
 
+    def write_incomplete_report(self, state, phase: str, code: int) -> None:
+        """A stop mid-eval (e.g. daily quota) still leaves an honest report: what finished, what didn't,
+        and NO gate decision."""
+        if not read_summary(self.dirs["candidate"]):
+            return
+        if getattr(self.args, "reduced", False):
+            sets = state.get("reduced_sets") or {"failing": self.failing_ids(), "regression": self.regression_ids}
+            cand = main_rates(read_summary(self.dirs["candidate"]))
+            done = lambda sid, n: eval_complete(self.dirs["candidate"], [s for s in self.main if s.id == sid], n)
+            result = self.reduced_gate(state)
+            missing = [s for s in sets["failing"] if not done(s, self.args.n)] + \
+                      [s for s in sets["regression"] if not done(s, 1)]
+            result.regressions = [r for r in result.regressions]
+            result.needs_confirmation = [s for s in result.needs_confirmation if s not in missing]
+        else:
+            result = self.gate_now(state)
+            missing = []
+        result.accepted = False
+        stop = "daily quota reached" if code == 3 else f"exit code {code}"
+        result.reasons = [f"INCOMPLETE: stopped in phase '{phase}' ({stop}); no gate decision. "
+                          f"Not run: {', '.join(missing) or 'see table'}"] + result.reasons
+        state["gate"] = {**result.__dict__, "incomplete": True}
+        state["incomplete_missing"] = missing
+        text = comparison_markdown(self, state)
+        (self.out / "comparison.md").write_text(text, encoding="utf-8")
+        (self.results_root / "comparison.md").write_text(text, encoding="utf-8")
+        self.save_state(state)
+
     def phase_report(self, state) -> int:
         text = comparison_markdown(self, state)
         (self.out / "comparison.md").write_text(text, encoding="utf-8")
@@ -281,7 +314,8 @@ def comparison_markdown(loop: Loop, state: dict) -> str:
     cand = read_summary(d["candidate"]) if state.get("candidate") else None
     analysis = json.loads((loop.out / "analysis.json").read_text(encoding="utf-8"))
     reduced = getattr(a, "reduced", False)
-    verdict = f"**{'REDUCED GATE' if reduced else 'Gate'}: {'ACCEPTED' if g['accepted'] else 'REJECTED'}.**"
+    decision = "INCOMPLETE (no decision)" if g.get("incomplete") else "ACCEPTED" if g["accepted"] else "REJECTED"
+    verdict = f"**{'REDUCED GATE' if reduced else 'Gate'}: {decision}.**"
     if reduced:
         lines = [f"# Improvement loop: {Path(a.prompt).stem} -> {a.version} (REDUCED GATE)", "",
                  f"{verdict} Failing-set score {g['baseline_score']:.3f} -> {g['candidate_score']:.3f}.", "",

@@ -350,3 +350,20 @@ def test_reduced_loop_rejects_when_regression_reproduces(tmp_path, v1):
     assert loop.run() == 0
     gate = json.loads((tmp_path / "results" / "loop" / "gate.json").read_text())
     assert not gate["accepted"] and "cancel_happy" in " ".join(gate["regressions"])
+
+
+def test_reduced_loop_quota_stop_writes_incomplete_report(tmp_path, v1):
+    loop, fake_eval, _ = make_reduced_loop(tmp_path, v1, baseline_fails_out_of_scope,
+                                           regression=("cancel_happy", "prompt_injection"))
+    real_call = fake_eval.__call__
+
+    def stop_on_injection(scenarios, n, prompt, tools, out=None, sample_offset=0, **kw):
+        if Path(out).name.startswith("candidate") and any(s.id == "prompt_injection" for s in scenarios):
+            return 3                                          # daily quota hit on the 2nd regression check
+        return real_call(scenarios, n, prompt, tools, out=out, sample_offset=sample_offset, **kw)
+    loop._run_eval = stop_on_injection
+    assert loop.run() == 3
+    report = (tmp_path / "results" / "comparison.md").read_text()
+    assert "REDUCED GATE: INCOMPLETE (no decision)" in report
+    assert "Not run: prompt_injection" in report
+    assert "| cancel_happy | 0/0 | 1/1 |" in report or "| cancel_happy |" in report
