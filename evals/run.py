@@ -259,7 +259,9 @@ def build_meta(prompt, tools, n) -> dict:
 
 
 def run_eval(scenarios, n, prompt, tools, out=None, judge_all=False, concurrency=None, fresh=False,
-             replay_only=False, defer_judge=False) -> int:
+             replay_only=False, defer_judge=False, sample_offset=0) -> int:
+    """sample_offset shifts the sample indices (and so the response-cache keys): a confirming rerun
+    uses offset=N to get N *new* samples instead of replaying the cached ones."""
     out_dir = Path(out) if out else ROOT / "results" / f"{Path(prompt).stem}__{Path(tools).stem}"
     runs_dir = out_dir / "runs"
     runs_dir.mkdir(parents=True, exist_ok=True)
@@ -286,7 +288,7 @@ def run_eval(scenarios, n, prompt, tools, out=None, judge_all=False, concurrency
         llms["sim"] = LLM("sim", cache_only=replay_only)
 
     jobs, records = [], []
-    for sample in range(n):
+    for sample in range(sample_offset, sample_offset + n):
         for sc in scenarios:
             path = runs_dir / f"{sc.id}__s{sample}.json"
             if path.exists():
