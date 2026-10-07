@@ -367,3 +367,14 @@ def test_reduced_loop_quota_stop_writes_incomplete_report(tmp_path, v1):
     assert "REDUCED GATE: INCOMPLETE (no decision)" in report
     assert "Not run: prompt_injection" in report
     assert "| cancel_happy | 0/0 | 1/1 |" in report or "| cancel_happy |" in report
+
+
+def test_summary_is_built_from_all_checkpoints_not_last_results_json(tmp_path):
+    from improve.loop import read_summary
+    d = tmp_path / "cand"
+    (d / "runs").mkdir(parents=True)
+    (d / "meta.json").write_text(json.dumps({"n": 3, "models": {}}))
+    for sid in ("out_of_scope", "cancel_happy"):
+        (d / "runs" / f"{sid}__s0.json").write_text(json.dumps(make_record(sid, "main", 0, True)))
+    (d / "results.json").write_text(json.dumps({"scenarios": {"cancel_happy": {}}}))  # stale, partial
+    assert set(read_summary(d)["scenarios"]) == {"out_of_scope", "cancel_happy"}

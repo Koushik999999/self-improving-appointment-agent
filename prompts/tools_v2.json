@@ -1,0 +1,157 @@
+[
+  {
+    "name": "verify_patient",
+    "description": "Verify the patient's identity using their full name and date of birth. Must succeed before you can view or change appointments.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string",
+          "description": "Patient's full name, e.g. 'Maria Lopez'."
+        },
+        "dob": {
+          "type": "string",
+          "description": "Date of birth in YYYY-MM-DD format."
+        }
+      },
+      "required": [
+        "name",
+        "dob"
+      ]
+    }
+  },
+  {
+    "name": "search_availability",
+    "description": "Search for open appointment slots. Provide an appointment type or a provider name, plus a date range. Returns up to 8 of the earliest open slots.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "appointment_type": {
+          "type": "string",
+          "enum": [
+            "primary_care",
+            "dermatology",
+            "cardiology"
+          ],
+          "description": "Kind of visit."
+        },
+        "provider_name": {
+          "type": "string",
+          "description": "Provider name or last name, e.g. 'Rao'."
+        },
+        "start_date": {
+          "type": "string",
+          "description": "First day to search, YYYY-MM-DD."
+        },
+        "end_date": {
+          "type": "string",
+          "description": "Last day to search, YYYY-MM-DD."
+        },
+        "time_of_day": {
+          "type": "string",
+          "enum": [
+            "morning",
+            "afternoon",
+            "any"
+          ],
+          "description": "Optional time-of-day filter."
+        }
+      },
+      "required": [
+        "start_date",
+        "end_date"
+      ]
+    }
+  },
+  {
+    "name": "list_my_appointments",
+    "description": "List the verified patient's upcoming appointments.",
+    "parameters": {
+      "type": "object",
+      "properties": {},
+      "required": []
+    }
+  },
+  {
+    "name": "book",
+    "description": "Book a slot for the verified patient. The slot must come from search_availability. The first call returns a confirmation summary instead of booking: read it to the patient, and once they agree, call book again with the same arguments.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "slot_id": {
+          "type": "string",
+          "description": "Slot id from search_availability."
+        },
+        "reason": {
+          "type": "string",
+          "description": "Optional short reason for the visit, in the patient's words."
+        }
+      },
+      "required": [
+        "slot_id"
+      ]
+    }
+  },
+  {
+    "name": "reschedule",
+    "description": "Move one of the verified patient's appointments to a new slot from search_availability. Like book, the first call returns a confirmation summary; call again with the same arguments after the patient agrees.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "appointment_id": {
+          "type": "string",
+          "description": "Appointment id from list_my_appointments."
+        },
+        "new_slot_id": {
+          "type": "string",
+          "description": "Slot id from search_availability."
+        }
+      },
+      "required": [
+        "appointment_id",
+        "new_slot_id"
+      ]
+    }
+  },
+  {
+    "name": "cancel",
+    "description": "Cancel one of the verified patient's appointments. The first call returns a confirmation summary; call again with the same arguments after the patient agrees.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "appointment_id": {
+          "type": "string",
+          "description": "Appointment id from list_my_appointments."
+        }
+      },
+      "required": [
+        "appointment_id"
+      ]
+    }
+  },
+  {
+    "name": "escalate_to_human",
+    "description": "Hand the conversation to clinic staff, for requests you cannot handle.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "reason": {
+          "type": "string",
+          "description": "Short summary of why."
+        },
+        "urgency": {
+          "type": "string",
+          "enum": [
+            "routine",
+            "urgent",
+            "emergency"
+          ]
+        }
+      },
+      "required": [
+        "reason",
+        "urgency"
+      ]
+    }
+  }
+]

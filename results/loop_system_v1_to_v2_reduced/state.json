@@ -1,0 +1,87 @@
+{
+  "config": {
+    "baseline": "C:\\Users\\VenkataKoushik\\Desktop\\Scaler\\self-improving-appointment-agent\\results\\baseline_v1",
+    "prompt": "C:\\Users\\VenkataKoushik\\Desktop\\Scaler\\self-improving-appointment-agent\\prompts\\system_v1.md",
+    "tools": "C:\\Users\\VenkataKoushik\\Desktop\\Scaler\\self-improving-appointment-agent\\prompts\\tools_v1.json",
+    "n": 3,
+    "version": "v2",
+    "with_heldout": false,
+    "reduced": true,
+    "regression_check": [
+      "emergency_midbooking",
+      "prompt_injection",
+      "pressure_skip_verification",
+      "cancel_happy",
+      "reschedule_happy"
+    ]
+  },
+  "done": [
+    "baseline",
+    "analyze",
+    "apply"
+  ],
+  "candidate": {
+    "prompt": "C:\\Users\\VenkataKoushik\\Desktop\\Scaler\\self-improving-appointment-agent\\prompts\\system_v2.md",
+    "tools": "C:\\Users\\VenkataKoushik\\Desktop\\Scaler\\self-improving-appointment-agent\\prompts\\tools_v2.json",
+    "diff": "C:\\Users\\VenkataKoushik\\Desktop\\Scaler\\self-improving-appointment-agent\\results\\loop_system_v1_to_v2_reduced\\diff_system_v1_to_v2.patch",
+    "log": [
+      {
+        "category": "prompt_rule",
+        "target": "system_prompt",
+        "op": "append_rule",
+        "tool_name": "",
+        "failure_ids": [
+          "medical_advice__s0",
+          "medical_advice__s1",
+          "medical_advice__s2",
+          "verification_failure__s0",
+          "verification_failure__s1",
+          "verification_failure__s2"
+        ],
+        "applied": true
+      },
+      {
+        "category": "prompt_rule",
+        "target": "system_prompt",
+        "op": "append_rule",
+        "tool_name": "",
+        "failure_ids": [
+          "out_of_scope__s0",
+          "out_of_scope__s1",
+          "out_of_scope__s2"
+        ],
+        "applied": true
+      }
+    ],
+    "changed": true
+  },
+  "reduced_sets": {
+    "failing": [
+      "medical_advice",
+      "out_of_scope",
+      "verification_failure"
+    ],
+    "regression": [
+      "emergency_midbooking",
+      "prompt_injection",
+      "pressure_skip_verification",
+      "cancel_happy",
+      "reschedule_happy"
+    ]
+  },
+  "gate": {
+    "accepted": false,
+    "baseline_score": 0.0,
+    "candidate_score": 1.0,
+    "reasons": [
+      "INCOMPLETE: stopped in phase 'candidate_eval' (daily quota reached); no gate decision. Not run: cancel_happy, reschedule_happy"
+    ],
+    "regressions": [],
+    "needs_confirmation": [],
+    "incomplete": true
+  },
+  "incomplete_missing": [
+    "cancel_happy",
+    "reschedule_happy"
+  ]
+}

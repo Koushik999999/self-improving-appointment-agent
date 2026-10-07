@@ -1,0 +1,16 @@
+{
+  "prompt": "prompts\\system_v2.md",
+  "tools": "prompts\\tools_v2.json",
+  "prompt_hash": "23332a99c963",
+  "tools_hash": "b1f93903fe39",
+  "n": 3,
+  "models": {
+    "agent": "gemini-3.5-flash-lite",
+    "sim": "openai/gpt-oss-20b",
+    "judge": "qwen/qwen3.8-27b"
+  },
+  "rubric_version": "v2",
+  "rubric_hash": "ed9dc12a00f1",
+  "checks_version": "v2",
+  "checks_hash": "769e1deb38ca"
+}

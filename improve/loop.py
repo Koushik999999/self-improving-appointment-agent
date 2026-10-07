@@ -28,8 +28,17 @@ PHASES = ["baseline", "analyze", "apply", "candidate_eval", "confirm", "gate", "
 
 
 def read_summary(results_dir: Path) -> dict | None:
-    path = Path(results_dir) / "results.json"
-    return json.loads(path.read_text(encoding="utf-8")) if path.exists() else None
+    """Summary built from ALL checkpointed runs in the directory. Not results.json: an eval directory
+    can be filled by several run_eval calls (e.g. reduced mode's per-scenario regression checks), and
+    each call rewrites results.json with only the scenarios it was given."""
+    results_dir = Path(results_dir)
+    runs, meta_path = results_dir / "runs", results_dir / "meta.json"
+    if not runs.exists() or not meta_path.exists():
+        path = results_dir / "results.json"
+        return json.loads(path.read_text(encoding="utf-8")) if path.exists() else None
+    from evals.run import summarize
+    records = [json.loads(p.read_text(encoding="utf-8")) for p in sorted(runs.glob("*.json"))]
+    return summarize(records, json.loads(meta_path.read_text(encoding="utf-8"))) if records else None
 
 
 def main_rates(summary: dict) -> dict[str, float]:
@@ -219,7 +228,8 @@ class Loop:
         cand_summary = read_summary(self.dirs["candidate"]) if state.get("candidate") else None
         cand = main_rates(cand_summary) if cand_summary else {}
         sets = state.get("reduced_sets") or {"failing": self.failing_ids(), "regression": self.regression_ids}
-        first = {sid: (cand.get(sid) == 1.0) for sid in sets["regression"]}
+        # Only scenarios that actually have a candidate run; unrun ones are reported as "not run".
+        first = {sid: (cand.get(sid) == 1.0) for sid in sets["regression"] if cand.get(sid) is not None}
         return gate_mod.evaluate_reduced({k: base[k] for k in sets["failing"]},
                                          {k: cand.get(k, 0.0) for k in sets["failing"]}, first, confirm)
 
