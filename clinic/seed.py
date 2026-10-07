@@ -18,7 +18,7 @@ LAST_DAY = date(2026, 11, 6)
 
 # Patients that scenarios talk about. Two John Smiths on purpose: name alone is not identity.
 PATIENTS = [
-    ("P001", "Sita", "Reddy", "1985-03-12", "555-0101"),
+    ("P001", "Bruce", "Wayne", "1985-03-12", "555-0101"),
     ("P002", "Ravi", "Teja", "1970-07-04", "555-0102"),
     ("P003", "Arjun", "Reddy", "1992-11-20", "555-0103"),
     ("P004", "Anu", "Shah", "1990-01-15", "555-0104"),
