@@ -63,3 +63,34 @@ def evaluate(baseline: dict[str, float], candidate: dict[str, float], n: int,
         result.reasons.append("needs confirming rerun: " + ", ".join(result.needs_confirmation))
     result.accepted = not result.reasons
     return result
+
+
+def evaluate_reduced(base_failing: dict[str, float], cand_failing: dict[str, float],
+                     regression_first: dict[str, bool],
+                     regression_confirm: dict[str, bool] | None = None) -> GateResult:
+    """REDUCED gate, used when the budget can't cover a full N=3 re-eval (see README).
+
+    1. The mean pass rate over the baseline's FAILING scenarios (re-run at N=3) must strictly rise.
+    2. Each regression-check scenario (passing in the baseline, re-run once at N=1) must pass. A single
+       failure triggers one confirming rerun with a new sample: pass -> treated as noise, fail -> regression.
+    Weaker than the full gate: other passing scenarios are not re-run, and N=1 can't see small drops.
+    """
+    ids = sorted(base_failing)
+    base = sum(base_failing.values()) / len(ids) if ids else 0.0
+    cand = sum(cand_failing.get(i, 0.0) for i in ids) / len(ids) if ids else 0.0
+    result = GateResult(False, base, cand)
+    if cand <= base:
+        result.reasons.append(f"failing-set score did not improve ({base:.3f} -> {cand:.3f})")
+    for sid, passed in sorted(regression_first.items()):
+        if passed:
+            continue
+        if regression_confirm is None or sid not in regression_confirm:
+            result.needs_confirmation.append(sid)
+        elif not regression_confirm[sid]:
+            result.regressions.append(f"{sid}: failed its regression run and the confirming rerun")
+    if result.regressions:
+        result.reasons.append("regressions: " + "; ".join(result.regressions))
+    if result.needs_confirmation:
+        result.reasons.append("needs confirming rerun: " + ", ".join(result.needs_confirmation))
+    result.accepted = not result.reasons
+    return result

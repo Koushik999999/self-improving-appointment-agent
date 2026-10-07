@@ -82,7 +82,18 @@ class Loop:
     def config(self) -> dict:
         a = self.args
         return {"baseline": str(a.baseline), "prompt": str(a.prompt), "tools": str(a.tools), "n": a.n,
-                "version": a.version, "with_heldout": a.with_heldout}
+                "version": a.version, "with_heldout": a.with_heldout,
+                "reduced": getattr(a, "reduced", False), "regression_check": self.regression_ids}
+
+    @property
+    def regression_ids(self) -> list[str]:
+        a = self.args
+        return sorted(getattr(a, "regression_check", None) or []) if getattr(a, "reduced", False) else []
+
+    def failing_ids(self) -> list[str]:
+        """Main scenarios that failed at least once in the baseline (reduced mode re-runs these at N)."""
+        base = main_rates(read_summary(self.dirs["baseline"]))
+        return sorted(sid for sid, rate in base.items() if rate is not None and rate < 1.0)
 
     def load_state(self) -> dict:
         if self.state_path.exists():
@@ -100,14 +111,15 @@ class Loop:
     @property
     def dirs(self) -> dict[str, Path]:
         base, v = Path(self.args.baseline), self.args.version
+        v = f"{v}_reduced" if getattr(self.args, "reduced", False) else v
         return {"baseline": base, "baseline_heldout": Path(f"{base}_heldout"),
                 "candidate": self.results_root / f"candidate_{v}",
                 "candidate_heldout": self.results_root / f"candidate_{v}_heldout",
                 "confirm": self.results_root / f"candidate_{v}_confirm"}
 
-    def ensure_eval(self, scenarios, prompt, tools, out_dir, sample_offset=0) -> int:
+    def ensure_eval(self, scenarios, prompt, tools, out_dir, sample_offset=0, n=None) -> int:
         """Generate what's missing, then judge what's pending. Returns 0 when complete."""
-        n = self.args.n
+        n = n or self.args.n
         if not eval_complete(out_dir, scenarios, n, sample_offset):
             code = self.run_eval(scenarios, n, prompt, tools, out=out_dir, sample_offset=sample_offset)
             if code not in (0,):
@@ -175,6 +187,17 @@ class Loop:
         cand, d = state.get("candidate"), self.dirs
         if not cand:
             return 0
+        if getattr(self.args, "reduced", False):
+            # REDUCED: baseline-failing scenarios at N, the chosen regression checks at N=1. No held-out.
+            failing = self.failing_ids()
+            regression = [s for s in self.regression_ids if s not in failing]  # failing ones run at N anyway
+            state["reduced_sets"] = {"failing": failing, "regression": regression}
+            code = self.ensure_eval([s for s in self.main if s.id in failing], cand["prompt"], cand["tools"],
+                                    d["candidate"])
+            if not code:
+                code = self.ensure_eval([s for s in self.main if s.id in regression], cand["prompt"],
+                                        cand["tools"], d["candidate"], n=1)
+            return code
         code = self.ensure_eval(self.main, cand["prompt"], cand["tools"], d["candidate"])
         if not code and self.args.with_heldout:
             code = self.ensure_eval(self.heldout, cand["prompt"], cand["tools"], d["candidate_heldout"])
@@ -186,8 +209,28 @@ class Loop:
         cand = main_rates(cand_summary) if cand_summary else {k: 0.0 for k in base}
         return gate_mod.evaluate(base, cand, self.args.n, confirm_rates)
 
+    def reduced_gate(self, state, confirm: dict | None = None):
+        base = main_rates(read_summary(self.dirs["baseline"]))
+        cand_summary = read_summary(self.dirs["candidate"]) if state.get("candidate") else None
+        cand = main_rates(cand_summary) if cand_summary else {}
+        sets = state.get("reduced_sets") or {"failing": self.failing_ids(), "regression": self.regression_ids}
+        first = {sid: (cand.get(sid) == 1.0) for sid in sets["regression"]}
+        return gate_mod.evaluate_reduced({k: base[k] for k in sets["failing"]},
+                                         {k: cand.get(k, 0.0) for k in sets["failing"]}, first, confirm)
+
     def phase_confirm(self, state) -> int:
-        """N <= 2 only: re-run scenarios whose drop isn't tolerated, with NEW samples (offset N)."""
+        """N <= 2: re-run scenarios whose drop isn't tolerated, with NEW samples (offset N).
+        REDUCED: one confirming run (new sample) for each regression check that failed its N=1 run."""
+        if getattr(self.args, "reduced", False):
+            if not state.get("candidate"):
+                return 0
+            pending = self.reduced_gate(state).needs_confirmation
+            state["confirm_scenarios"] = pending
+            if not pending:
+                return 0
+            cand = state["candidate"]
+            return self.ensure_eval([s for s in self.main if s.id in pending], cand["prompt"], cand["tools"],
+                                    self.dirs["confirm"], sample_offset=1, n=1)
         if not state.get("candidate") or self.args.n >= 3:
             return 0
         pending = self.gate_now(state).needs_confirmation
@@ -204,7 +247,10 @@ class Loop:
         if state.get("confirm_scenarios"):
             confirm_rates = {k: v for k, v in main_rates(read_summary(self.dirs["confirm"])).items()
                              if k in state["confirm_scenarios"]}
-        result = self.gate_now(state, confirm_rates)
+        if getattr(self.args, "reduced", False):
+            result = self.reduced_gate(state, {k: v == 1.0 for k, v in (confirm_rates or {}).items()} or None)
+        else:
+            result = self.gate_now(state, confirm_rates)
         if not state.get("candidate"):
             result.accepted = False
             result.reasons.insert(0, "no applicable improvements were proposed, so there is no candidate")
@@ -234,27 +280,58 @@ def comparison_markdown(loop: Loop, state: dict) -> str:
     base = read_summary(d["baseline"])
     cand = read_summary(d["candidate"]) if state.get("candidate") else None
     analysis = json.loads((loop.out / "analysis.json").read_text(encoding="utf-8"))
-    lines = [f"# Improvement loop: {Path(a.prompt).stem} -> {a.version}", "",
-             f"**Gate: {'ACCEPTED' if g['accepted'] else 'REJECTED'}.** Main-set score "
-             f"{g['baseline_score']:.3f} -> {g['candidate_score']:.3f} (N={a.n} runs per scenario; "
-             f"tolerated drop per scenario: {gate_mod.tolerated_drop_runs(a.n)} run(s)"
-             + (", with confirming reruns" if a.n <= 2 else "") + ").", ""]
+    reduced = getattr(a, "reduced", False)
+    verdict = f"**{'REDUCED GATE' if reduced else 'Gate'}: {'ACCEPTED' if g['accepted'] else 'REJECTED'}.**"
+    if reduced:
+        lines = [f"# Improvement loop: {Path(a.prompt).stem} -> {a.version} (REDUCED GATE)", "",
+                 f"{verdict} Failing-set score {g['baseline_score']:.3f} -> {g['candidate_score']:.3f}.", "",
+                 "Reduced gate (budget-limited, weaker than the full gate): the baseline's failing scenarios are "
+                 f"re-run at N={a.n} and their mean pass rate must rise; a chosen set of passing scenarios is "
+                 "re-run once (N=1) as a regression check, and any failure gets one confirming rerun. Other main "
+                 "scenarios and the held-out set were **not** re-evaluated.", ""]
+    else:
+        lines = [f"# Improvement loop: {Path(a.prompt).stem} -> {a.version}", "",
+                 f"{verdict} Main-set score {g['baseline_score']:.3f} -> {g['candidate_score']:.3f} (N={a.n} runs "
+                 f"per scenario; tolerated drop per scenario: {gate_mod.tolerated_drop_runs(a.n)} run(s)"
+                 + (", with confirming reruns" if a.n <= 2 else "") + ").", ""]
     if g["reasons"]:
         lines += ["Reasons: " + "; ".join(g["reasons"]), ""]
-    lines += ["Rubric/checks: " + f"{base['meta'].get('rubric_version')} / {base['meta'].get('checks_version')}"
-              + (" (same for both versions)" if not cand or (cand['meta'].get('rubric_hash') == base['meta'].get('rubric_hash'))
-                 else " **(MISMATCH: comparison invalid)**"), ""]
+    same = not cand or (cand["meta"].get("rubric_hash") == base["meta"].get("rubric_hash")
+                        and cand["meta"]["models"].get("judge") == base["meta"]["models"].get("judge")
+                        and cand["meta"]["models"].get("agent") == base["meta"]["models"].get("agent"))
+    lines += [f"Rubric {base['meta'].get('rubric_version')}, checks {base['meta'].get('checks_version')}, "
+              f"agent `{base['meta']['models'].get('agent')}`, judge `{base['meta']['models'].get('judge')}`"
+              + (" (same for both versions)" if same else " **(MISMATCH: comparison invalid)**"), ""]
 
-    lines += ["## Main set (gated)", "", f"| scenario | {Path(a.prompt).stem} | {a.version} | change |", "|---|---|---|---|"]
-    for sid, b in base["scenarios"].items():
-        if b["set"] != "main":
-            continue
-        c = cand["scenarios"].get(sid) if cand else None
-        drop = gate_mod.drop_in_runs(b["pass_rate"], c["pass_rate"], a.n) if c else None
-        gain = round((c["pass_rate"] - b["pass_rate"]) * a.n) if c else None
-        note = ("-" if c is None else f"regression ({drop} run(s))" if drop and drop > gate_mod.tolerated_drop_runs(a.n)
-                else f"-{drop} run (tolerated)" if drop else f"+{gain}" if gain else "=")
-        lines.append(f"| {sid} | {_rate(b)} | {_rate(c)} | {note} |")
+    if reduced:
+        sets = state.get("reduced_sets", {"failing": [], "regression": []})
+        confirm = read_summary(d["confirm"]) if state.get("confirm_scenarios") else None
+        lines += ["## Failing set (re-run at N=%d, gated on mean pass rate)" % a.n, "",
+                  f"| scenario | {Path(a.prompt).stem} | {a.version} |", "|---|---|---|"]
+        for sid in sets["failing"]:
+            c = cand["scenarios"].get(sid) if cand else None
+            lines.append(f"| {sid} | {_rate(base['scenarios'][sid])} | {_rate(c)} |")
+        lines += ["", "## Regression check (passing in baseline, re-run at N=1)", "",
+                  f"| scenario | {Path(a.prompt).stem} | {a.version} (N=1) | confirming rerun |", "|---|---|---|---|"]
+        for sid in sets["regression"]:
+            c = cand["scenarios"].get(sid) if cand else None
+            cf = confirm["scenarios"].get(sid) if confirm else None
+            lines.append(f"| {sid} | {_rate(base['scenarios'][sid])} | {_rate(c)} | {_rate(cf) if cf else '-'} |")
+        skipped = [sid for sid, b in base["scenarios"].items()
+                   if b["set"] == "main" and sid not in sets["failing"] + sets["regression"]]
+        lines += ["", "Not re-evaluated on the candidate: " + (", ".join(skipped) or "none") + "."]
+    else:
+        lines += ["## Main set (gated)", "", f"| scenario | {Path(a.prompt).stem} | {a.version} | change |",
+                  "|---|---|---|---|"]
+        for sid, b in base["scenarios"].items():
+            if b["set"] != "main":
+                continue
+            c = cand["scenarios"].get(sid) if cand else None
+            drop = gate_mod.drop_in_runs(b["pass_rate"], c["pass_rate"], a.n) if c else None
+            gain = round((c["pass_rate"] - b["pass_rate"]) * a.n) if c else None
+            note = ("-" if c is None else f"regression ({drop} run(s))" if drop and drop > gate_mod.tolerated_drop_runs(a.n)
+                    else f"-{drop} run (tolerated)" if drop else f"+{gain}" if gain else "=")
+            lines.append(f"| {sid} | {_rate(b)} | {_rate(c)} | {note} |")
 
     if a.with_heldout:
         bh, ch = read_summary(d["baseline_heldout"]), read_summary(d["candidate_heldout"]) if cand else None
@@ -351,8 +428,18 @@ def parse_args(argv=None):
     ap.add_argument("--out", default=None, help="loop directory (default results/loop_<prompt>_to_<version>)")
     ap.add_argument("--dry-run", action="store_true")
     ap.add_argument("--fresh", action="store_true", help="discard this loop's phase state (not the evals)")
+    ap.add_argument("--reduced", action="store_true",
+                    help="budget mode: re-run baseline-failing scenarios at N, --regression-check scenarios at "
+                         "N=1 (one confirming rerun on failure); no held-out. Labelled REDUCED GATE.")
+    ap.add_argument("--regression-check", default="emergency_midbooking,prompt_injection,"
+                    "pressure_skip_verification,cancel_happy,reschedule_happy",
+                    help="comma-separated passing scenarios to re-run at N=1 in --reduced mode")
     args = ap.parse_args(argv)
-    args.out = args.out or str(ROOT / "results" / f"loop_{Path(args.prompt).stem}_to_{args.version}")
+    args.regression_check = [s for s in args.regression_check.split(",") if s]
+    if args.reduced and args.with_heldout:
+        ap.error("--reduced does not run the held-out set")
+    suffix = "_reduced" if args.reduced else ""
+    args.out = args.out or str(ROOT / "results" / f"loop_{Path(args.prompt).stem}_to_{args.version}{suffix}")
     return args
 
 

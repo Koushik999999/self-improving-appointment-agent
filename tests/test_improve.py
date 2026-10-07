@@ -292,3 +292,61 @@ def test_no_applicable_improvement_means_no_candidate_and_rejection(tmp_path, v1
     assert not gate["accepted"] and "no candidate" in gate["reasons"][0]
     assert not any(name.startswith("candidate") for name, _ in fake_eval.calls)
     assert "recorded for a human, not applied" in (tmp_path / "results" / "comparison.md").read_text()
+
+
+# ---------------------------------------------------------------- reduced gate
+
+def test_reduced_gate_rules():
+    from improve.gate import evaluate_reduced
+    base = {"out_of_scope": 0.0, "medical_advice": 2 / 3}
+    assert evaluate_reduced(base, {"out_of_scope": 1.0, "medical_advice": 2 / 3}, {"cancel_happy": True}).accepted
+    assert not evaluate_reduced(base, {"out_of_scope": 0.0, "medical_advice": 2 / 3}, {"cancel_happy": True}).accepted
+    pending = evaluate_reduced(base, {"out_of_scope": 1.0, "medical_advice": 1.0}, {"cancel_happy": False})
+    assert not pending.accepted and pending.needs_confirmation == ["cancel_happy"]
+    assert evaluate_reduced(base, {"out_of_scope": 1.0, "medical_advice": 1.0}, {"cancel_happy": False},
+                            {"cancel_happy": True}).accepted
+    assert not evaluate_reduced(base, {"out_of_scope": 1.0, "medical_advice": 1.0}, {"cancel_happy": False},
+                                {"cancel_happy": False}).accepted
+
+
+def make_reduced_loop(tmp_path, v1, outcome, regression=("cancel_happy", "prompt_injection")):
+    loop, fake_eval, improver = make_loop(tmp_path, v1, outcome)
+    loop.args.reduced = True
+    loop.args.regression_check = list(regression)
+    return loop, fake_eval, improver
+
+
+def test_reduced_loop_runs_failing_at_n3_and_regression_at_n1(tmp_path, v1):
+    loop, fake_eval, _ = make_reduced_loop(tmp_path, v1, baseline_fails_out_of_scope)
+    assert loop.run() == 0
+    runs = sorted(p.name for p in (tmp_path / "results" / "candidate_v2_reduced" / "runs").glob("*.json"))
+    assert runs == ["cancel_happy__s0.json", "out_of_scope__s0.json", "out_of_scope__s1.json",
+                    "out_of_scope__s2.json", "prompt_injection__s0.json"]
+    gate = json.loads((tmp_path / "results" / "loop" / "gate.json").read_text())
+    assert gate["accepted"]
+    report = (tmp_path / "results" / "comparison.md").read_text()
+    assert "REDUCED GATE" in report and "Not re-evaluated on the candidate" in report
+
+
+def test_reduced_loop_confirms_a_failed_regression_run(tmp_path, v1):
+    def outcome(d, sid, sample):
+        if d.startswith("baseline"):
+            return sid != "out_of_scope"
+        if d == "candidate_v2_reduced" and sid == "cancel_happy":
+            return False                                   # N=1 regression run fails...
+        return True                                        # ...the confirming rerun passes
+    loop, fake_eval, _ = make_reduced_loop(tmp_path, v1, outcome)
+    assert loop.run() == 0
+    assert ("candidate_v2_reduced_confirm", 1) in fake_eval.calls
+    assert json.loads((tmp_path / "results" / "loop" / "gate.json").read_text())["accepted"]
+
+
+def test_reduced_loop_rejects_when_regression_reproduces(tmp_path, v1):
+    def outcome(d, sid, sample):
+        if d.startswith("baseline"):
+            return sid != "out_of_scope"
+        return sid != "cancel_happy"
+    loop, _, _ = make_reduced_loop(tmp_path, v1, outcome)
+    assert loop.run() == 0
+    gate = json.loads((tmp_path / "results" / "loop" / "gate.json").read_text())
+    assert not gate["accepted"] and "cancel_happy" in " ".join(gate["regressions"])
