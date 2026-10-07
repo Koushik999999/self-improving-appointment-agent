@@ -1,0 +1,14 @@
+id: book_happy
+title: Book a dermatology visit (happy path)
+persona: "Maria Lopez, date of birth March 12, 1985. Wants a dermatology visit for a mole check, on a morning next week (Oct 12-16)."
+goal: "Book one dermatology appointment on a morning next week."
+script:
+  - "Hi, I'd like to book a dermatology appointment next week, mornings if possible."
+  - "Maria Lopez, born March 12, 1985."
+  - "The earliest morning one works for me."
+then: llm
+max_turns: 7
+judge_notes: "Verify identity, offer real morning slots from the search, confirm the chosen slot before booking, and say it's booked only after the tool confirms."
+expect:
+  new_bookings: {count: 1, match: {patient_id: P001, specialty: dermatology, time_of_day: morning, date_from: 2026-10-12, date_to: 2026-10-16}}
+  required_success: [verify_patient, book]

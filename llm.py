@@ -6,6 +6,7 @@ Configuration is per role, from the environment (.env is loaded, real env vars w
     {ROLE}_BASE_URL / {ROLE}_API_KEY   optional explicit overrides
     {ROLE}_RPM / _TPM / _RPD / _TPD    client-side limits (0 = unknown/unlimited)
     {ROLE}_REASONING_EFFORT            optional (low|medium|high) for reasoning models
+    {ROLE}_MAX_TOKENS                  optional default output cap (reasoning tokens count toward it)
 IMPROVER falls back to JUDGE settings when unset.
 
 What a call goes through, in order:
@@ -77,6 +78,7 @@ class RoleConfig:
     rpd: int
     tpd: int
     reasoning_effort: str = ""
+    max_tokens: int = 0
 
     @property
     def bucket(self) -> str:
@@ -109,7 +111,7 @@ def role_config(role: str) -> RoleConfig:
                       api_key=api_key, model=get("MODEL"),
                       rpm=int(get("RPM", 0)), tpm=int(get("TPM", 0)),
                       rpd=int(get("RPD", 0)), tpd=int(get("TPD", 0)),
-                      reasoning_effort=get("REASONING_EFFORT"))
+                      reasoning_effort=get("REASONING_EFFORT"), max_tokens=int(get("MAX_TOKENS", 0)))
 
 
 def estimate_tokens(obj) -> int:
@@ -309,6 +311,7 @@ class LLM:
     def chat(self, messages: list[dict], tools: list[dict] | None = None, *, sample: int = 0,
              temperature: float | None = None, response_format: dict | None = None,
              max_tokens: int | None = None) -> ChatResult:
+        max_tokens = max_tokens or self.cfg.max_tokens or None
         request: dict = {"messages": messages}
         if tools:
             request["tools"] = [{"type": "function", "function": t} for t in tools]
@@ -393,8 +396,9 @@ class LLM:
             return None
 
     def chat_json(self, messages: list[dict], schema: dict, name: str, *, sample: int = 0,
-                  temperature: float = 0.0, max_tokens: int | None = None) -> dict:
-        """Structured output: strict json_schema first; json_object mode if the endpoint rejects schemas."""
+                  temperature: float = 0.0, max_tokens: int | None = None) -> tuple[dict, ChatResult]:
+        """Structured output: strict json_schema first; json_object mode if the endpoint rejects schemas.
+        Returns (parsed JSON, the ChatResult that produced it, for its token usage)."""
         formats = [{"type": "json_schema", "json_schema": {"name": name, "schema": schema, "strict": True}},
                    {"type": "json_object"}]
         last_error: Exception | None = None
@@ -406,7 +410,7 @@ class LLM:
                 last_error = e
                 continue
             try:
-                return parse_json_content(result.content)
+                return parse_json_content(result.content), result
             except ValueError as e:  # JSONDecodeError is a ValueError
                 bump(self.role, "json_parse_failures")
                 last_error = e

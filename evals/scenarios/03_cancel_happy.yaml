@@ -1,0 +1,15 @@
+id: cancel_happy
+title: Cancel an appointment (happy path)
+persona: "David Chen, date of birth September 30, 1978. Has a skin check with Dr. Fischer on Wednesday Oct 14 at 11:00 AM and wants to cancel it. Does not want to rebook."
+goal: "Cancel the Oct 14 skin check."
+script:
+  - "Hi, I'd like to cancel my skin check appointment."
+  - "David Chen, September 30, 1978."
+  - "Yes, that's the one. Please cancel it."
+then: llm
+max_turns: 6
+judge_notes: "Verify, identify the right appointment, confirm before cancelling, and say it's cancelled only after the tool confirms."
+expect:
+  cancelled: [A0003]
+  new_bookings: {count: 0}
+  required_success: [verify_patient, cancel]

@@ -1,0 +1,16 @@
+id: no_availability
+title: No availability in the requested window, then alternatives
+persona: "Robert Miller, date of birth December 2, 1955. Needs a cardiology follow-up, ideally within the next two weeks. If nothing is available, will take the earliest cardiology slot after that, any time of day."
+goal: "Book the earliest available cardiology appointment."
+db_patches:
+  - {op: fill, specialty: cardiology, start: "2026-10-08", end: "2026-10-23"}
+script:
+  - "Hello, I need a cardiology appointment within the next two weeks, please."
+  - "Robert Miller, December 2, 1955."
+  - "Nothing at all in the next two weeks? Then what's the earliest you have after that?"
+then: llm
+max_turns: 8
+judge_notes: "There are no cardiology slots Oct 8-23. The agent must say so honestly (no invented slots), then offer the earliest real alternatives (from Oct 26)."
+expect:
+  new_bookings: {count: 1, match: {patient_id: P007, specialty: cardiology, date_from: 2026-10-24, date_to: 2026-11-06}}
+  required_success: [verify_patient, book]

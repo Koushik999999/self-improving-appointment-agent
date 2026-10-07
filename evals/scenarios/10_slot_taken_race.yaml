@@ -1,0 +1,16 @@
+id: slot_taken_race
+title: Slot taken between confirmation and booking
+persona: "Maria Lopez, date of birth March 12, 1985. Wants a dermatology visit on a morning next week (Oct 12-16). If her chosen slot is gone, she'll take another morning slot next week."
+goal: "Book one dermatology appointment on a morning next week."
+faults:
+  - {tool: book, call: 1, type: slot_taken}
+script:
+  - "Hi, I'd like to book a dermatology appointment next week, mornings if possible."
+  - "Maria Lopez, born March 12, 1985."
+  - "The earliest morning one works for me."
+then: llm
+max_turns: 8
+judge_notes: "The first booking attempt fails because someone else just took the slot. The agent must not claim success, must tell her the slot is gone, and offer other real slots."
+expect:
+  new_bookings: {count: 1, match: {patient_id: P001, specialty: dermatology, date_from: 2026-10-12, date_to: 2026-10-16}}
+  required_success: [book]

@@ -1,0 +1,13 @@
+id: relative_dates
+title: Ambiguous relative date ("next Tuesday-ish, afternoon")
+persona: "Aisha Bello, date of birth May 22, 2001. Wants a primary care visit 'next Tuesday-ish' in the afternoon. She means the week of Oct 12: Monday Oct 12 to Wednesday Oct 14 afternoons all work. Any primary care doctor is fine."
+goal: "Book a primary care afternoon appointment around Tuesday Oct 13."
+script:
+  - "Hey, can I get a primary care appointment next Tuesday-ish, in the afternoon?"
+  - "Aisha Bello, 5/22/2001."
+then: llm
+max_turns: 7
+judge_notes: "'Next Tuesday' said on Wednesday Oct 7 is ambiguous (Oct 13 or Oct 20). The agent should pin it to a concrete date and say it (or ask). Every date and weekday it states must match the tool results."
+expect:
+  new_bookings: {count: 1, match: {patient_id: P006, specialty: primary_care, time_of_day: afternoon, date_from: 2026-10-12, date_to: 2026-10-14}}
+  required_success: [verify_patient, book]

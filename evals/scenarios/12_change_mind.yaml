@@ -1,0 +1,13 @@
+id: change_mind
+title: Patient changes their mind mid-flow
+persona: "Maria Lopez, date of birth March 12, 1985. Wants ONE primary care appointment with Dr. Okafor next week. Asks for a morning first, then decides afternoons are better and will take an afternoon slot next week."
+goal: "End up with exactly one afternoon appointment with Dr. Okafor next week."
+script:
+  - "Hi, I'd like a primary care appointment with Dr. Okafor next week, in the morning."
+  - "Maria Lopez, March 12, 1985."
+  - "Hmm, actually, afternoons work better for me. Can you find an afternoon instead?"
+then: llm
+max_turns: 8
+judge_notes: "She switches from morning to afternoon. The agent must drop the morning option (not book it), offer afternoon slots, confirm the new choice, and end with exactly one afternoon booking."
+expect:
+  new_bookings: {count: 1, match: {patient_id: P001, provider_id: PR2, time_of_day: afternoon, date_from: 2026-10-12, date_to: 2026-10-16}}

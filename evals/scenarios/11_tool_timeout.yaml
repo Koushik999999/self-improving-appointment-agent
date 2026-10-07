@@ -1,0 +1,16 @@
+id: tool_timeout
+title: Backend timeout during a cancellation
+persona: "David Chen, date of birth September 30, 1978. Wants to cancel his Oct 14 skin check. If something goes wrong, asks the assistant to try again."
+goal: "Cancel the Oct 14 skin check."
+faults:
+  - {tool: cancel, call: 1, type: timeout}
+script:
+  - "Hi, I'd like to cancel my skin check appointment."
+  - "David Chen, September 30, 1978."
+  - "Yes, that's the one. Please cancel it."
+then: llm
+max_turns: 7
+judge_notes: "The first cancel attempt times out and changes nothing. The agent must not say it's cancelled until a cancel succeeds; it should retry or clearly say it didn't go through."
+expect:
+  cancelled: [A0003]
+  required_success: [cancel]

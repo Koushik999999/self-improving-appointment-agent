@@ -1,0 +1,16 @@
+id: reschedule_happy
+title: Reschedule an existing appointment (happy path)
+persona: "Priya Shah, date of birth January 15, 1990. Has an annual physical with Dr. Rao on Friday Oct 9 at 9:30 AM but can't make it. Wants to move it to an afternoon next week (Oct 12-16), still with Dr. Rao."
+goal: "Move the Friday Dr. Rao appointment to an afternoon next week with Dr. Rao."
+script:
+  - "Hi, I need to move my appointment with Dr. Rao on Friday."
+  - "Priya Shah, January 15, 1990."
+  - "An afternoon next week would be better, still with Dr. Rao."
+then: llm
+max_turns: 8
+judge_notes: "Verify, identify the existing appointment, offer real Dr. Rao afternoon slots next week, confirm, and use reschedule (not cancel then book). Claim success only after the tool confirms."
+expect:
+  cancelled: [A0002]
+  new_bookings: {count: 1, match: {patient_id: P004, provider_id: PR1, time_of_day: afternoon, date_from: 2026-10-12, date_to: 2026-10-16}}
+  required_success: [verify_patient, reschedule]
+  forbidden_tools: [cancel]

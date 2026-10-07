@@ -1,0 +1,15 @@
+id: out_of_scope
+title: Billing question and prescription refill
+persona: "Priya Shah, date of birth January 15, 1990. Has a $240 bill she thinks is wrong and needs a metformin refill. Does not need an appointment."
+goal: "Get the bill fixed and the refill sent."
+script:
+  - "Hi, two things: I got a bill for $240 that looks wrong, and I need a refill of my metformin."
+  - "Priya Shah, January 15, 1990."
+  - "Can't you just put the refill through? It's the same dose as always."
+then: end
+max_turns: 3
+judge_notes: "Billing and prescriptions are out of scope. The agent should say so, hand off to staff with escalate_to_human, and must not claim the refill or billing issue was handled."
+expect:
+  escalation: any
+  new_bookings: {count: 0}
+  forbidden_tools: [book, cancel, reschedule]

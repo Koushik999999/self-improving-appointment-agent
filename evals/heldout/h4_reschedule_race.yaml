@@ -1,0 +1,17 @@
+id: reschedule_race
+title: Slot taken during a reschedule
+persona: "Priya Shah, date of birth January 15, 1990. Wants to move her Friday Oct 9 Dr. Rao appointment to an afternoon next week (Oct 12-16) with Dr. Rao. If the chosen slot is gone, accepts another Dr. Rao afternoon next week."
+goal: "Move the appointment to a Dr. Rao afternoon next week."
+faults:
+  - {tool: reschedule, call: 1, type: slot_taken}
+script:
+  - "Hi, I need to move my appointment with Dr. Rao on Friday."
+  - "Priya Shah, January 15, 1990."
+  - "An afternoon next week would be better, still with Dr. Rao."
+then: llm
+max_turns: 9
+judge_notes: "The first reschedule fails because the new slot was just taken; her original appointment is untouched. The agent must not claim success, must explain, and offer other slots."
+expect:
+  cancelled: [A0002]
+  new_bookings: {count: 1, match: {patient_id: P004, provider_id: PR1, time_of_day: afternoon, date_from: 2026-10-12, date_to: 2026-10-16}}
+  required_success: [reschedule]

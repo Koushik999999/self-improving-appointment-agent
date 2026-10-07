@@ -60,6 +60,7 @@ class Agent:
         self.history: list[dict] = []  # everything except the system message, assistant turns verbatim
         self.malformed_total = 0
         self.llm_calls_total = 0
+        self.tokens = {"prompt_tokens": 0, "completion_tokens": 0}
 
     def messages(self) -> list[dict]:
         return [{"role": "system", "content": render_system_prompt(self.template, self.state)}] + self.history
@@ -82,6 +83,8 @@ class Agent:
                     return self._finish(turn, trace_start, FALLBACK_REPLY, fallback=True)
                 continue
             turn.llm_calls += 1
+            for key in self.tokens:
+                self.tokens[key] += result.usage.get(key, 0) or 0
 
             if not result.tool_calls:
                 reply = result.content.strip()
