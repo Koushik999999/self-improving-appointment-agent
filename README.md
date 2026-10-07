@@ -7,8 +7,8 @@ that learns from the agent's own failures:
 
 **Results (real runs):** v1 baseline **0.786** on the 14 main scenarios (N=3, tag `baseline-v1`). The loop
 produced v2 (two prompt rules); under a **reduced gate** the three failing scenarios went **0/9 -> 9/9**, and
-3 of 5 regression checks passed (N=1). The run stopped at the agent's daily quota before the last two checks,
-so the gate verdict is **INCOMPLETE**. See `results/comparison.md` and "Limitations / next steps".
+the 3 regression checks that ran passed (N=1). The run stopped at the agent's daily quota before the last
+two checks, so **the gate verdict is INCOMPLETE**. v2's new escalation rule may also cover emergencies (untested; see below). See `results/comparison.md` and "Limitations / next steps".
 
 **One command to chat:** `python -m agent.cli -v`  
 **One command to run the loop:** `python -m improve.loop` (full gate) or `python -m improve.loop --reduced` (budget mode used here)
@@ -143,30 +143,43 @@ are reported but never gated, so they stay an overfitting check.
 
 ## Limitations / next steps
 
-- **Reduced gate, incomplete.** Free-tier quotas (agent: 450 requests/day assumed; Google's real limit
-  unconfirmed) didn't cover a full N=3 re-eval of v2. The reduced gate re-ran only the 3 failing scenarios
-  at N=3 and a regression check at N=1. That check stopped at the agent quota after 3 of 5 scenarios
-  (cancel_happy and reschedule_happy were not run), and 6 other main scenarios were not re-checked. N=1
-  can't detect small regressions. **Next:** `python -m improve.loop --with-heldout` for the full N=3 gate.
+**The gate verdict is INCOMPLETE.** v2 was neither accepted nor rejected.
+
+- **Reduced gate, cut short.** Free-tier quotas (agent: 450 requests/day assumed; Google's real limit
+  unconfirmed) didn't cover a full N=3 re-eval of v2. The reduced gate re-ran the 3 failing scenarios at
+  N=3 (0/9 -> 9/9) and a regression check at N=1. That check stopped at the agent quota after 3 of 5
+  scenarios passed; cancel_happy and reschedule_happy were not run. 6 other main scenarios were not
+  re-checked, and N=1 can't detect small regressions.
+- **v2 emergency-wording risk.** v2's new rule says "Verify the patient's full name and date of birth before
+  performing any escalation". Read literally, that includes emergencies, so it could delay an emergency
+  hand-off for an unverified caller. emergency_midbooking passed, but the patient was already verified there.
+  The held-out `emergency_first` scenario (emergency in the first message, no verification) tests exactly
+  this case, and it was not run. I did not edit the patch: the loop's output is reported as produced.
 - **Held-out set not run.** The 4 held-out scenarios exist and are tested (they never reach the improver,
-  enforced and unit-tested), but budget didn't allow running them. They matter here: v2's new rule
-  "verify identity before *any* escalation" could delay an emergency hand-off for an unverified caller,
-  which is exactly what held-out `emergency_first` tests.
-- **Judge switches**, all forced by quotas or access, and each followed by a re-judge so baseline and
-  candidate always share one judge:
-  gpt-oss-120b (original; daily token cap) -> gemini-3.6-flash (fallback; daily quota after 8 calls, and
-  the same family as the agent) -> gpt-oss-20b (Qwen still blocked at the org level) -> **qwen/qwen3.8-27b**.
-  The gpt-oss-20b and Qwen judgments agree on every scenario's pass/fail; the gpt-oss-20b results are
-  archived in `results/archive/`.
+  enforced and unit-tested), but budget didn't allow running them.
+- **Judge switches**, all forced by quotas or access, each followed by a re-judge so baseline and candidate
+  always share one judge: gpt-oss-120b (original; daily token cap) -> gemini-3.6-flash (fallback; daily quota
+  after 8 calls, and the same family as the agent, so its partial results were discarded) -> gpt-oss-20b
+  (Qwen blocked at the org level) -> **qwen/qwen3.8-27b**. gpt-oss-20b and Qwen agree on every scenario's
+  pass/fail; the gpt-oss-20b results are archived in `results/archive/`. All reported scores are Qwen's.
 - **The judge and the agent are different model families on purpose** (Gemini agent, Qwen judge), to avoid
-  shared blind spots and self-preference. A **stronger or human-calibrated judge** is the next step: Qwen
-  failed `safety` on the generic "no patient matches that name and date of birth" message, which looks
-  like over-strictness, and no judge here has been checked against human labels.
-- **The rubric was tightened after reading v1 transcripts** (rubric v2 + checks v2: escalation must carry
-  a verified identity, no unguaranteed promises). Before the baseline was frozen, this took v1 from
-  **14/14 to 11/14 on the same conversations**. Both versions are graded with v2. The change is disclosed
-  in `AI_LOG.md` (#65-72) because it was made after seeing the outputs.
-- **Gaps the checks don't measure:** duplicate staff tickets (v2 opened two in out_of_scope); success
-  claims in unusual phrasings (the claim detector is narrow on purpose); tone beyond what the judge sees.
-- **More budget** would buy: the full N=3 gate, the held-out run, N=5 for tighter pass-rate estimates,
-  and a second loop iteration.
+  shared blind spots and self-preference. No judge here has been calibrated against human labels.
+  Known item: possible judge over-strictness on the generic "no patient matches" message (Qwen failed
+  `safety` on it in 2 already-failing runs), not yet human-checked.
+- **The rubric was tightened after reading v1 transcripts** (rubric v2 + checks v2: escalation must carry a
+  verified identity; no unguaranteed promises). Before the baseline was frozen, this took v1 from **14/14 to
+  11/14 on the same conversations**. Both versions are graded with v2; the change is disclosed in
+  `AI_LOG.md` (#65-72) because it was made after seeing the outputs.
+- **Gaps the checks don't measure:** duplicate staff tickets (v2 opened two in out_of_scope); success claims in
+  unusual phrasings (the claim detector is narrow on purpose); tone beyond what the judge sees.
+
+### Next steps (first thing after quota resets)
+
+1. Run held-out `emergency_first` on v2 (and v1 for comparison), to test the "any escalation" wording risk:
+   `python -m evals.run --set heldout --scenarios emergency_first --n 3 --prompt prompts/system_v2.md --tools prompts/tools_v2.json --out results/candidate_v2_heldout_emergency`
+2. Finish the reduced gate (runs cancel_happy and reschedule_happy, then gates and writes the report):
+   `python -m improve.loop --reduced`
+3. Run the full held-out set on v1 and v2.
+4. Run the full N=3 gate: `python -m improve.loop --with-heldout`
+5. Calibrate the judge against human labels (start with the "no patient matches" safety verdicts and the
+   promises item).
