@@ -187,6 +187,10 @@ def test_simulator_bare_done_ends():
     ("Yes, please book the 9:30 AM slot on Tuesday, October 13.Your appointment with Dr. Okafor is confirmed.",
      "Yes, please book the 9:30 AM slot on Tuesday, October 13."),
     ("Great, the 10 AM works. Thanks!", "Great, the 10 AM works. Thanks!"),   # patient may start with "Great"
+    ("Yes, please.Your dermatology appointment with Dr. Lena Fischer is scheduled for Tuesday.", "Yes, please."),
+    ("Tuesday, October 13 at 10:00 AM works.Confirmed! I'll book that slot.", "Tuesday, October 13 at 10:00 AM works."),
+    ("Friday at 9:00 AM with Dr. Anita Rao works.Got it, 9:00 AM Friday. Thanks.", "Friday at 9:00 AM with Dr. Anita Rao works."),
+    ("Monday works.We'll see you then.", "Monday works."),
     ("I'll take Thursday, October 15 at 2:30 PM.", "I'll take Thursday, October 15 at 2:30 PM."),
 ])
 def test_simulator_sanitizer(raw, clean):
@@ -238,3 +242,74 @@ def test_out_of_scope_style_conversation_fails_end_to_end():
     verify = ("verify_patient", {"name": "Priya Shah", "dob": "1990-01-15"})
     ctx = make_ctx("out_of_scope", [[esc], [verify], []], ["I've notified staff.", "Verified.", "Staff have it."])
     assert "escalation_has_identity" in failed(ctx)
+
+
+# ---- generate-only / judge-only split
+
+class _TextLLM:
+    """Agent stand-in that always answers with plain text (no tool calls)."""
+    def chat(self, messages, **kw):
+        from llm import ChatResult
+        return ChatResult({"role": "assistant", "content": "I can't verify you; please call the front desk."},
+                          {}, False, 0.0)
+
+
+class _PassJudge:
+    role = "judge"
+
+    def __init__(self):
+        self.calls = 0
+
+    def chat_json(self, messages, schema, name, **kw):
+        from evals.judge import ITEMS
+        from llm import ChatResult
+        self.calls += 1
+        verdicts = {k: {"verdict": "pass", "reason": "ok"} for k in ITEMS}
+        return verdicts, ChatResult({"role": "assistant", "content": "{}"}, {"total_tokens": 10}, False, 0.0)
+
+
+def _generated_dir(tmp_path):
+    import json
+    from evals.run import build_meta, run_conversation, save_record
+    from agent.agent import DEFAULT_PROMPT, DEFAULT_TOOLS
+    sc = next(s for s in load_scenarios("main") if s.id == "verification_failure")  # fully scripted
+    record = run_conversation(sc, 0, DEFAULT_PROMPT, DEFAULT_TOOLS, {"agent": _TextLLM()},
+                              judge_all=False, defer_judge=True)  # no judge LLM given: must not be called
+    runs = tmp_path / "runs"
+    runs.mkdir()
+    save_record(runs, record)
+    (tmp_path / "meta.json").write_text(json.dumps(build_meta(DEFAULT_PROMPT, DEFAULT_TOOLS, 1)))
+    return record
+
+
+def test_generate_only_defers_judging(tmp_path):
+    record = _generated_dir(tmp_path)
+    assert record["deterministic"]["passed"]
+    assert record["judge_pending"] and record["passed"] is None and record["judge"] is None
+
+
+def test_judge_only_judges_pending_runs(tmp_path):
+    import json
+    from evals.run import judge_pending
+    _generated_dir(tmp_path)
+    judge = _PassJudge()
+    assert judge_pending(tmp_path, concurrency=1, judge_llm=judge) == 0
+    saved = json.loads((tmp_path / "runs" / "verification_failure__s0.json").read_text())
+    assert judge.calls == 1 and saved["passed"] is True and not saved["judge_pending"]
+    assert judge_pending(tmp_path, concurrency=1, judge_llm=judge) == 0 and judge.calls == 1  # nothing left
+
+
+def test_judge_only_refuses_different_rubric(tmp_path):
+    import json
+    from evals.run import judge_pending
+    _generated_dir(tmp_path)
+    meta = json.loads((tmp_path / "meta.json").read_text())
+    meta["rubric_hash"] = "something-else"
+    (tmp_path / "meta.json").write_text(json.dumps(meta))
+    judge = _PassJudge()
+    assert judge_pending(tmp_path, concurrency=1, judge_llm=judge) == 2 and judge.calls == 0
+
+
+def test_whitespace_only_change_is_not_a_cut():
+    from evals.simulator import sanitize_line
+    assert sanitize_line("Yes, please.Thanks so much.") == ("Yes, please. Thanks so much.", False)

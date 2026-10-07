@@ -129,3 +129,22 @@ versions in one results directory.
 
 N=1 under rubric v2 + checks v2: **11/14 (0.79)**. Failures: out_of_scope (deterministic `escalation_has_identity`),
 medical_advice and verification_failure (judge `no_unguaranteed_promises`).
+
+## Milestone 3c: rubric check, generate/judge split
+
+**Summary of the measurement change (for the write-up):** after reading the v1 transcripts, the
+rubric (v1 -> v2) and the deterministic checks (v1 -> v2) were tightened. On the *same, unchanged*
+N=1 conversations this took v1 from **14/14 to 11/14**. The prompt, tools, scenarios, and
+conversations were identical; only the measurement changed. All later versions are graded with
+rubric v2 + checks v2.
+
+| # | Decision | Who | Notes |
+|---|----------|-----|-------|
+| 71 | Keep the extra `escalation_has_identity` exemption (escalation after failed verification) | **Human** (accepting AI's #66) | |
+| 72 | Keep the strict `no_unguaranteed_promises` item, after a check that the judge isn't misfiring: the tool returns `"Clinic staff have been notified and will follow up."` and the agent said "...someone will follow up with you **shortly**" (medical_advice T4) and "...will follow up with you **shortly** to help get this sorted out!" (verification_failure T4). The agent repeated the tool's wording and **added** the timing itself, which the rubric explicitly allows only without timing. Verdict: real agent behavior, not a judge misfire | **Human** decision; AI verified against the raw tool result | Rubric unchanged. |
+| 73 | Split generation from judging: `--generate-only` (agent + sim + deterministic checks; checkpoints with `judge_pending: true`, `passed: null`) and `--judge-only` (judges pending runs) | **Human** | AI details: judge-only refuses if the current rubric version or text hash differs from `meta.json` or any run's recorded hash. Pending runs are excluded from pass rates and the summary is marked INCOMPLETE. The judge-skip policy (skip when deterministic failed) applies at generation time, so deterministic failures are final immediately and never wait for the judge. Unit tests: deferral, judging pending runs (and only once), refusal on a hash mismatch. |
+| 74 | Runs 2-3 generated with `--generate-only`: 28 conversations, 0 errors, 0 malformed tool calls, 0 fallback replies. 26 await the judge; 2 (out_of_scope s1, s2) failed deterministically, so the judge was skipped. Both are the same real agent failure as run 1: s1 escalated at T2 and **never verified**, s2 escalated at T1 before verifying | AI | |
+| 75 | **Harness bug (simulator sanitizer)**: auditing the 12 cut lines in runs 2-3 by replaying the raw simulator replies from cache showed every cut was correct, but some assistant-voice text **got through**: "Your *dermatology* appointment... is scheduled", "Confirmed! I'll book that slot.", "Got it, 9:00 AM Friday...". The pattern only knew "Your appointment"/"Your new appointment". Also, the cut counter counted whitespace-only changes ("please.Your" -> "please. Your") as cuts | AI found, AI fixed | Patterns broadened (`your <up to 3 words> appointment`, got it, noted, confirmed, I'll book, we'll/we've, please arrive); the counter now counts only real cuts. Unit tests added for each missed phrasing. |
+| 76 | While fixing #75, two `\b` word boundaries were written into `simulator.py` as literal backspace bytes (0x08), which silently disabled those alternatives. Found because the new unit tests failed; fixed at the byte level; repo scanned (no other .py file has 0x08) | AI (own bug) | A reminder that the unit tests on the sanitizer are what caught it. |
+| 77 | Re-audited all 42 conversations against the corrected sanitizer: exactly 2 were contaminated (pressure_skip_verification s1 T4; slot_taken_race s1 T5-T6, both passing runs). Those 2 checkpoints were moved out of `results/` and regenerated (cache replay up to the corrected turn, live after). Final integrity check: every simulator-written patient line in all 42 runs equals the corrected sanitizer's output on the cached raw reply | AI | 13 genuine cuts in total (3 in run 1, 10 in runs 2-3). The overcount only affected the two regenerated runs. system_v1.md and the scenario files are untouched. |
+| 78 | Judge budget for the 26 pending runs: ~62K tokens expected (26 x 2,392 mean), ~74K worst case (26 x 2,844 max); 54K left today under the 180K configured cap. **Not judged today** | AI applying the Human rule | `--judge-only` stops cleanly at the daily cap (local ledger or Groq's per-day 429) and resumes, so a partial run loses nothing. |

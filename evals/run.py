@@ -4,6 +4,8 @@
     python -m evals.run --n 1                          # main set, 1 run per scenario
     python -m evals.run --set heldout --n 3
     python -m evals.run --prompt prompts/system_v2.md --tools prompts/tools_v2.json
+    python -m evals.run --n 3 --generate-only          # agent + sim + deterministic checks; judge later
+    python -m evals.run --n 3 --judge-only             # judge saved transcripts that still need it
 
 Each finished conversation is checkpointed to <out>/runs/<scenario>__s<sample>.json. Re-running the
 same command resumes: finished conversations are loaded, not re-run (so a daily-quota cutoff loses
@@ -13,6 +15,11 @@ checkpointed, so they are retried on resume.
 Scoring per conversation: deterministic checks (evals/checks.py) AND the LLM judge must both pass.
 By default the judge is skipped when the deterministic layer already failed (the run fails either
 way); skipped runs are marked judge_skipped in results.json. --judge-all judges every run.
+
+Generation and judging can be split (different providers have different daily quotas):
+--generate-only checkpoints transcripts with `judge_pending: true` and `passed: null`; --judge-only
+judges them later, and refuses unless the current rubric version and text hash match the ones the
+results directory was created with. Pending runs are excluded from pass rates and listed as pending.
 """
 import argparse
 import hashlib
@@ -41,7 +48,12 @@ def file_hash(path) -> str:
     return hashlib.sha256(Path(path).read_bytes()).hexdigest()[:12]
 
 
-def run_conversation(sc, sample: int, prompt: str, tools: str, llms: dict, judge_all: bool) -> dict:
+def rubric_hash() -> str:
+    return hashlib.sha256(judge_mod.RUBRIC.encode("utf-8")).hexdigest()[:12]
+
+
+def run_conversation(sc, sample: int, prompt: str, tools: str, llms: dict, judge_all: bool,
+                     defer_judge: bool = False) -> dict:
     clinic = Clinic(patches=sc.db_patches)
     initial = clinic.snapshot()
     faults = FaultInjector(sc.faults)
@@ -60,22 +72,14 @@ def run_conversation(sc, sample: int, prompt: str, tools: str, llms: dict, judge
 
     ctx = Context(sc, initial, clinic.snapshot(), clinic, agent.tools.trace, turns, agent.state)
     checks = run_checks(ctx)
-    det_pass = all(c.passed for c in checks)
-
-    judged, skipped = None, False
-    if det_pass or judge_all:
-        judged = judge_mod.judge(sc, turns, agent.tools.trace, llms["judge"], sample)
-    else:
-        skipped = True
-    passed = det_pass and (judged["passed"] if judged else False)
-
-    return {
-        "scenario": sc.id, "set": sc.set, "sample": sample, "passed": passed,
-        "rubric_version": judge_mod.RUBRIC_VERSION, "checks_version": CHECKS_VERSION,
-        "deterministic": {"passed": det_pass, "checks": [c.to_dict() for c in checks]},
-        "judge": judged, "judge_skipped": skipped,
+    record = {
+        "scenario": sc.id, "set": sc.set, "sample": sample, "passed": None,
+        "rubric_version": judge_mod.RUBRIC_VERSION, "rubric_hash": rubric_hash(),
+        "checks_version": CHECKS_VERSION,
+        "deterministic": {"passed": all(c.passed for c in checks), "checks": [c.to_dict() for c in checks]},
+        "judge": None, "judge_skipped": False, "judge_pending": False,
         "turns": turns,
-        "trace": [{**t, "args": t["args"]} for t in agent.tools.trace],
+        "trace": agent.tools.trace,
         "final_state": agent.state.to_dict(),
         "faults_fired": faults.fired,
         "db": {"initial": initial, "final": ctx.final},
@@ -84,7 +88,23 @@ def run_conversation(sc, sample: int, prompt: str, tools: str, llms: dict, judge
                   "malformed_tool_calls": malformed,
                   "fallback_replies": fallbacks, "patient_turns": len(turns)},
     }
+    if not record["deterministic"]["passed"] and not judge_all:
+        record["judge_skipped"] = True
+        record["passed"] = False
+    elif defer_judge:
+        record["judge_pending"] = True
+    else:
+        apply_judge(record, sc, llms["judge"])
+    return record
 
+
+def apply_judge(record: dict, sc, judge_llm) -> None:
+    record["judge"] = judge_mod.judge(sc, record["turns"], record["trace"], judge_llm, record["sample"])
+    record["judge_pending"] = False
+    record["passed"] = record["deterministic"]["passed"] and record["judge"]["passed"]
+
+
+# ---------------------------------------------------------------- summaries
 
 def summarize(records: list[dict], meta: dict) -> dict:
     by_sc: dict[str, list[dict]] = {}
@@ -92,30 +112,36 @@ def summarize(records: list[dict], meta: dict) -> dict:
         by_sc.setdefault(r["scenario"], []).append(r)
     scenarios = {}
     for sid, runs in sorted(by_sc.items()):
+        done = [r for r in runs if r["passed"] is not None]
         failing_checks = Counter(c["name"] for r in runs for c in r["deterministic"]["checks"] if not c["passed"])
         failing_items = Counter(k for r in runs if r["judge"] for k, v in r["judge"]["items"].items()
                                 if v["verdict"] == "fail")
         scenarios[sid] = {
-            "set": runs[0]["set"], "runs": len(runs), "passed": sum(r["passed"] for r in runs),
-            "pass_rate": sum(r["passed"] for r in runs) / len(runs),
+            "set": runs[0]["set"], "runs": len(runs), "scored": len(done),
+            "pending": len(runs) - len(done),
+            "passed": sum(bool(r["passed"]) for r in done),
+            "pass_rate": sum(bool(r["passed"]) for r in done) / len(done) if done else None,
             "det_passed": sum(r["deterministic"]["passed"] for r in runs),
             "judge_passed": sum(bool(r["judge"] and r["judge"]["passed"]) for r in runs),
             "judge_skipped": sum(r["judge_skipped"] for r in runs),
             "failing_checks": dict(failing_checks), "failing_judge_items": dict(failing_items),
             "malformed_tool_calls": sum(r["stats"]["malformed_tool_calls"] for r in runs),
+            "sim_lines_sanitized": sum(r["stats"].get("sim_lines_sanitized", 0) for r in runs),
         }
 
     def score(set_name):
-        rates = [s["pass_rate"] for s in scenarios.values() if s["set"] == set_name]
+        rates = [s["pass_rate"] for s in scenarios.values() if s["set"] == set_name and s["pass_rate"] is not None]
         return sum(rates) / len(rates) if rates else None
 
     judge_usage = [r["judge"]["usage"] for r in records if r["judge"] and not r["judge"].get("cached")]
     return {
         "meta": meta,
         "score": {"main": score("main"), "heldout": score("heldout")},
+        "complete": all(s["pending"] == 0 for s in scenarios.values()),
         "scenarios": scenarios,
         "totals": {
             "conversations": len(records),
+            "judge_pending": sum(r.get("judge_pending", False) for r in records),
             "judge_skipped": sum(r["judge_skipped"] for r in records),
             "judge_skipped_runs": [f"{r['scenario']}__s{r['sample']}" for r in records if r["judge_skipped"]],
             "malformed_tool_calls": sum(r["stats"]["malformed_tool_calls"] for r in records),
@@ -131,28 +157,34 @@ def summarize(records: list[dict], meta: dict) -> dict:
 def summary_markdown(summary: dict) -> str:
     m = summary["meta"]
     lines = [f"# Eval: {m['prompt']} + {m['tools']}", "",
-             f"Rubric {m.get('rubric_version', 'v1')}, deterministic checks {m.get('checks_version', 'v1')}.", "",
+             f"Rubric {m.get('rubric_version', 'v1')} (hash {m.get('rubric_hash', '-')}), "
+             f"deterministic checks {m.get('checks_version', 'v1')}.", "",
              f"Models: agent `{m['models']['agent']}`, sim `{m['models']['sim']}`, judge `{m['models']['judge']}`. "
              f"N={m['n']} per scenario.", ""]
+    if not summary["complete"]:
+        lines += [f"**INCOMPLETE: {summary['totals']['judge_pending']} run(s) await judging "
+                  "(`--judge-only`). Scores below cover scored runs only.**", ""]
     for set_name in ("main", "heldout"):
         sc = {k: v for k, v in summary["scenarios"].items() if v["set"] == set_name}
         if not sc:
             continue
         score = summary["score"][set_name]
-        lines += [f"## {set_name} set: score {score:.2f} (mean pass rate over {len(sc)} scenarios)", "",
-                  "| scenario | pass | deterministic | judge | judge skipped | failing checks | failing judge items |",
-                  "|---|---|---|---|---|---|---|"]
+        score_text = f"{score:.2f}" if score is not None else "n/a"
+        lines += [f"## {set_name} set: score {score_text} (mean pass rate over {len(sc)} scenarios)", "",
+                  "| scenario | pass | deterministic | judge | judge skipped | judge pending | failing checks | failing judge items |",
+                  "|---|---|---|---|---|---|---|---|"]
         for sid, s in sc.items():
             checks = ", ".join(f"{k}" + (f" x{v}" if v > 1 else "") for k, v in s["failing_checks"].items()) or "-"
             items = ", ".join(f"{k}" + (f" x{v}" if v > 1 else "") for k, v in s["failing_judge_items"].items()) or "-"
-            judged = s["runs"] - s["judge_skipped"]
-            lines.append(f"| {sid} | {s['passed']}/{s['runs']} | {s['det_passed']}/{s['runs']} | "
-                         f"{s['judge_passed']}/{judged} | {s['judge_skipped']} | {checks} | {items} |")
+            judged = s["runs"] - s["judge_skipped"] - s["pending"]
+            lines.append(f"| {sid} | {s['passed']}/{s['scored']} | {s['det_passed']}/{s['runs']} | "
+                         f"{s['judge_passed']}/{judged} | {s['judge_skipped']} | {s['pending']} | {checks} | {items} |")
         lines.append("")
     t = summary["totals"]
     jt = [x for x in t["judge_tokens_per_call"] if x]
     lines += ["## Totals", "",
-              f"- conversations: {t['conversations']}; judge skipped (deterministic already failed): {t['judge_skipped']}",
+              f"- conversations: {t['conversations']}; judge skipped (deterministic already failed): "
+              f"{t['judge_skipped']}; judge pending: {t['judge_pending']}",
               f"- malformed tool calls: {t['malformed_tool_calls']}; fallback replies: {t['fallback_replies']}",
               f"- agent LLM calls: {t['agent_llm_calls']}; simulator LLM calls: {t['sim_llm_calls']} "
               f"(lines cut for speaking as the assistant: {t['sim_lines_sanitized']})",
@@ -160,6 +192,26 @@ def summary_markdown(summary: dict) -> str:
               ""]
     return "\n".join(lines)
 
+
+def write_summary(out_dir: Path, records: list[dict], meta: dict, run_info: dict) -> dict:
+    summary = summarize(records, meta)
+    summary["run_info"] = run_info
+    (out_dir / "results.json").write_text(json.dumps(summary, indent=1, default=str), encoding="utf-8")
+    (out_dir / "summary.md").write_text(summary_markdown(summary), encoding="utf-8")
+    print("\n" + summary_markdown(summary))
+    return summary
+
+
+def load_records(runs_dir: Path) -> list[dict]:
+    return [json.loads(p.read_text(encoding="utf-8")) for p in sorted(runs_dir.glob("*.json"))]
+
+
+def save_record(runs_dir: Path, record: dict) -> None:
+    path = runs_dir / f"{record['scenario']}__s{record['sample']}.json"
+    path.write_text(json.dumps(record, indent=1, ensure_ascii=False, default=str), encoding="utf-8")
+
+
+# ---------------------------------------------------------------- CLI
 
 def main(argv=None):
     ap = argparse.ArgumentParser(description="Run the scenario eval.")
@@ -176,6 +228,11 @@ def main(argv=None):
     ap.add_argument("--replay-only", action="store_true",
                     help="agent and simulator answer only from the response cache (no live calls); "
                          "used to re-score existing conversations under new checks/rubric")
+    mode = ap.add_mutually_exclusive_group()
+    mode.add_argument("--generate-only", action="store_true",
+                      help="run agent + simulator + deterministic checks; leave judging pending")
+    mode.add_argument("--judge-only", action="store_true",
+                      help="judge checkpointed runs that are pending (no agent/sim calls)")
     args = ap.parse_args(argv)
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
@@ -184,23 +241,29 @@ def main(argv=None):
         from .estimate import print_report
         print_report(load_scenarios("main", ids), load_scenarios("heldout", ids), args.prompt, args.tools)
         return 0
+    out_dir = Path(args.out) if args.out else ROOT / "results" / f"{Path(args.prompt).stem}__{Path(args.tools).stem}"
+    if args.judge_only:
+        return judge_pending(out_dir, concurrency=args.concurrency)
     return run_eval(load_scenarios(args.set, ids), args.n, args.prompt, args.tools,
-                    out=args.out, judge_all=args.judge_all, concurrency=args.concurrency, fresh=args.fresh,
-                    replay_only=args.replay_only)
+                    out=out_dir, judge_all=args.judge_all, concurrency=args.concurrency, fresh=args.fresh,
+                    replay_only=args.replay_only, defer_judge=args.generate_only)
+
+
+def build_meta(prompt, tools, n) -> dict:
+    rel = lambda p: str(Path(p).relative_to(ROOT)) if Path(p).is_absolute() else str(p)
+    return {"prompt": rel(prompt), "tools": rel(tools),
+            "prompt_hash": file_hash(prompt), "tools_hash": file_hash(tools), "n": n,
+            "models": {r: role_config(r).model for r in ("agent", "sim", "judge")},
+            "rubric_version": judge_mod.RUBRIC_VERSION, "rubric_hash": rubric_hash(),
+            "checks_version": CHECKS_VERSION, "checks_hash": file_hash(ROOT / "evals" / "checks.py")}
 
 
 def run_eval(scenarios, n, prompt, tools, out=None, judge_all=False, concurrency=None, fresh=False,
-             replay_only=False) -> int:
+             replay_only=False, defer_judge=False) -> int:
     out_dir = Path(out) if out else ROOT / "results" / f"{Path(prompt).stem}__{Path(tools).stem}"
     runs_dir = out_dir / "runs"
     runs_dir.mkdir(parents=True, exist_ok=True)
-    meta = {"prompt": str(Path(prompt).relative_to(ROOT)) if Path(prompt).is_absolute() else prompt,
-            "tools": str(Path(tools).relative_to(ROOT)) if Path(tools).is_absolute() else tools,
-            "prompt_hash": file_hash(prompt), "tools_hash": file_hash(tools), "n": n,
-            "models": {r: role_config(r).model for r in ("agent", "sim", "judge")},
-            "rubric_version": judge_mod.RUBRIC_VERSION, "checks_version": CHECKS_VERSION,
-            "rubric_hash": hashlib.sha256(judge_mod.RUBRIC.encode("utf-8")).hexdigest()[:12],
-            "checks_hash": file_hash(ROOT / "evals" / "checks.py")}
+    meta = build_meta(prompt, tools, n)
 
     meta_path = out_dir / "meta.json"
     if meta_path.exists() and not fresh:
@@ -210,12 +273,15 @@ def run_eval(scenarios, n, prompt, tools, out=None, judge_all=False, concurrency
             print(f"{out_dir} holds results for a different prompt/tools/model/rubric/checks version. "
                   "Use --out for a new directory or --fresh to discard them.")
             return 2
+        meta["n"] = max(meta["n"], old.get("n", 0))
     if fresh:
         for f in runs_dir.glob("*.json"):
             f.unlink()
     meta_path.write_text(json.dumps(meta, indent=2), encoding="utf-8")
 
-    llms = {"agent": LLM("agent", cache_only=replay_only), "judge": LLM("judge")}
+    llms = {"agent": LLM("agent", cache_only=replay_only)}
+    if not defer_judge:
+        llms["judge"] = LLM("judge")
     if any(sc.llm_turns or sc.then == "llm" for sc in scenarios):
         llms["sim"] = LLM("sim", cache_only=replay_only)
 
@@ -226,18 +292,18 @@ def run_eval(scenarios, n, prompt, tools, out=None, judge_all=False, concurrency
             if path.exists():
                 records.append(json.loads(path.read_text(encoding="utf-8")))
             else:
-                jobs.append((sc, sample, path))
-    print(f"{len(records)} conversations loaded from checkpoints, {len(jobs)} to run -> {out_dir}")
+                jobs.append((sc, sample))
+    print(f"{len(records)} conversations loaded from checkpoints, {len(jobs)} to run -> {out_dir}"
+          + (" (judging deferred)" if defer_judge else ""))
 
     stop = threading.Event()
-    lock = threading.Lock()
     errors = []
 
-    def work(sc, sample, path):
+    def work(sc, sample):
         if stop.is_set():
             return None
-        record = run_conversation(sc, sample, prompt, tools, llms, judge_all)
-        path.write_text(json.dumps(record, indent=1, ensure_ascii=False, default=str), encoding="utf-8")
+        record = run_conversation(sc, sample, prompt, tools, llms, judge_all, defer_judge)
+        save_record(runs_dir, record)
         return record
 
     started = time.time()
@@ -245,7 +311,7 @@ def run_eval(scenarios, n, prompt, tools, out=None, judge_all=False, concurrency
     with ThreadPoolExecutor(max_workers=concurrency or env_int("EVAL_CONCURRENCY", 2)) as pool:
         futures = {pool.submit(work, *job): job for job in jobs}
         for fut in as_completed(futures):
-            sc, sample, _ = futures[fut]
+            sc, sample = futures[fut]
             try:
                 record = fut.result()
             except QuotaExhausted as e:
@@ -258,21 +324,18 @@ def run_eval(scenarios, n, prompt, tools, out=None, judge_all=False, concurrency
                 continue
             if record is None:
                 continue
-            with lock:
-                records.append(record)
-                det = "ok" if record["deterministic"]["passed"] else "FAIL"
-                jdg = "skipped" if record["judge_skipped"] else ("ok" if record["judge"]["passed"] else "FAIL")
-                print(f"  [{len(records)}/{n * len(scenarios)}] {sc.id} s{sample}: "
-                      f"{'PASS' if record['passed'] else 'FAIL'} (deterministic {det}, judge {jdg}) "
-                      f"{time.time() - started:.0f}s")
+            records.append(record)
+            det = "ok" if record["deterministic"]["passed"] else "FAIL"
+            jdg = ("skipped" if record["judge_skipped"] else "pending" if record["judge_pending"]
+                   else "ok" if record["judge"]["passed"] else "FAIL")
+            result = "PENDING" if record["passed"] is None else "PASS" if record["passed"] else "FAIL"
+            print(f"  [{len(records)}/{n * len(scenarios)}] {sc.id} s{sample}: {result} "
+                  f"(deterministic {det}, judge {jdg}) {time.time() - started:.0f}s")
 
-    summary = summarize(records, meta) if records else None
-    if summary:
-        summary["run_info"] = {"errors": errors, "quota_stop": quota_hit, "llm_stats": stats_snapshot(),
-                               "complete": not errors and not quota_hit and len(records) == n * len(scenarios)}
-        (out_dir / "results.json").write_text(json.dumps(summary, indent=1, default=str), encoding="utf-8")
-        (out_dir / "summary.md").write_text(summary_markdown(summary), encoding="utf-8")
-        print("\n" + summary_markdown(summary))
+    if records:
+        write_summary(out_dir, records, meta, {
+            "errors": errors, "quota_stop": quota_hit, "llm_stats": stats_snapshot(),
+            "all_generated": not errors and not quota_hit and len(records) == n * len(scenarios)})
     if quota_hit:
         print(f"STOPPED: {quota_hit}\nFinished conversations are checkpointed; re-run the same command to resume.")
         return 3
@@ -280,6 +343,68 @@ def run_eval(scenarios, n, prompt, tools, out=None, judge_all=False, concurrency
         print(f"{len(errors)} conversation(s) failed with infra errors; re-run the same command to retry them.")
         return 1
     return 0
+
+
+def judge_pending(out_dir: Path, concurrency: int | None = None, judge_llm=None) -> int:
+    """Judge checkpointed runs with judge_pending. Refuses if the rubric changed since the results
+    directory was created: every run in one directory must be graded by the same rubric text."""
+    meta_path = out_dir / "meta.json"
+    if not meta_path.exists():
+        print(f"{out_dir}: no meta.json; nothing to judge.")
+        return 2
+    meta = json.loads(meta_path.read_text(encoding="utf-8"))
+    current = {"rubric_version": judge_mod.RUBRIC_VERSION, "rubric_hash": rubric_hash()}
+    if any(meta.get(k) != v for k, v in current.items()):
+        print(f"REFUSING: {out_dir} was created with rubric {meta.get('rubric_version')} "
+              f"(hash {meta.get('rubric_hash')}); the current rubric is {current['rubric_version']} "
+              f"(hash {current['rubric_hash']}). Judging with a different rubric would mix measurements.")
+        return 2
+    runs_dir = out_dir / "runs"
+    records = load_records(runs_dir)
+    mismatched = [f"{r['scenario']}__s{r['sample']}" for r in records
+                  if r.get("rubric_hash", meta["rubric_hash"]) != current["rubric_hash"]]
+    if mismatched:
+        print(f"REFUSING: runs recorded under a different rubric hash: {mismatched}")
+        return 2
+
+    pending = [r for r in records if r.get("judge_pending")]
+    print(f"{len(pending)} run(s) pending judgment in {out_dir} (rubric {current['rubric_version']}, "
+          f"hash {current['rubric_hash']})")
+    scenarios = {s.id: s for s in load_scenarios("all")}
+    judge_llm = judge_llm or LLM("judge")
+    stop = threading.Event()
+    quota_hit, errors = None, []
+
+    def work(record):
+        if stop.is_set():
+            return None
+        apply_judge(record, scenarios[record["scenario"]], judge_llm)
+        save_record(runs_dir, record)
+        return record
+
+    with ThreadPoolExecutor(max_workers=concurrency or env_int("EVAL_CONCURRENCY", 2)) as pool:
+        futures = {pool.submit(work, r): r for r in pending}
+        for fut in as_completed(futures):
+            r = futures[fut]
+            try:
+                done = fut.result()
+            except QuotaExhausted as e:
+                quota_hit = str(e)
+                stop.set()
+                continue
+            except Exception as e:
+                errors.append(f"{r['scenario']}__s{r['sample']}: {type(e).__name__}: {str(e)[:200]}")
+                continue
+            if done:
+                print(f"  judged {done['scenario']} s{done['sample']}: {'PASS' if done['passed'] else 'FAIL'}")
+
+    records = load_records(runs_dir)
+    write_summary(out_dir, records, meta, {"errors": errors, "quota_stop": quota_hit,
+                                           "llm_stats": stats_snapshot(), "mode": "judge-only"})
+    if quota_hit:
+        print(f"STOPPED: {quota_hit}\nJudged runs are saved; re-run --judge-only to continue.")
+        return 3
+    return 1 if errors else 0
 
 
 if __name__ == "__main__":

@@ -15,9 +15,11 @@ DONE = "[DONE]"
 # and writes the assistant's next reply ("Yes.Your appointment is confirmed..."). Those words would
 # put fake success claims into the patient's mouth, so the line is cut at the first such sentence.
 ASSISTANT_VOICE = re.compile(
-    r"^(great|perfect|wonderful|thank you for (verifying|confirming)|your (new )?appointment|"
-    r"you'?re all set|you are all set|i'?ve (booked|scheduled|cancel)|i have (booked|scheduled|cancel)|"
-    r"you'?ll receive|you will receive|let me know if|is there anything else|have a great)",
+    r"^(great|perfect|wonderful|got it|noted|confirmed\b|thank you for (verifying|confirming)|"
+    r"your (new )?([\w\-]+ ){0,3}(appointment|visit|booking)|"
+    r"you'?re all set|you are all set|i'?ll (book|schedule|cancel|reschedule|go ahead)|"
+    r"i'?ve (booked|scheduled|cancel)|i have (booked|scheduled|cancel)|we(?:'ve| have|'ll| will)\b|"
+    r"you'?ll receive|you will receive|please arrive|let (me|us) know if|is there anything else|have a great)",
     re.IGNORECASE)
 
 SIM_SYSTEM = """You are role-playing a PATIENT texting a clinic's scheduling assistant. Stay in character.
@@ -77,19 +79,21 @@ class Patient:
         # model predicts the goal will be met, but the agent may still need a confirmation.
         # Send the reply and ignore the marker; a bare [DONE] (or max_turns) ends the conversation.
         text = text.replace(DONE, "").strip()
-        clean = sanitize(text)
-        if clean != text:
-            self.sanitized += 1
+        clean, cut = sanitize_line(text)
+        self.sanitized += int(cut)
         return clean or None
 
 
-def sanitize(text: str) -> str:
+def sanitize_line(text: str) -> tuple[str, bool]:
     """Keep the patient's sentences; drop everything from the first assistant-voice sentence on.
-    Splits even without a space after the period ("works.Great! I've...")."""
-    sentences = re.split(r"(?<=[.!?])\s*(?=[A-Z])", text)
-    kept = []
+    Splits even without a space after the period ("works.Great! I've..."). Returns (text, cut?);
+    whitespace normalization alone does not count as a cut."""
+    sentences = [x.strip() for x in re.split(r"(?<=[.!?])\s*(?=[A-Z])", text) if x.strip()]
     for i, sentence in enumerate(sentences):
-        if i > 0 and ASSISTANT_VOICE.match(sentence.strip()):
-            break
-        kept.append(sentence.strip())
-    return " ".join(kept).strip()
+        if i > 0 and ASSISTANT_VOICE.match(sentence):
+            return " ".join(sentences[:i]), True
+    return " ".join(sentences), False
+
+
+def sanitize(text: str) -> str:
+    return sanitize_line(text)[0]
