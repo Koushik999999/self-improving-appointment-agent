@@ -108,3 +108,24 @@ simulator was fixed. Invalid runs were kept out of `results/`.
 | 62 | The valid baseline replayed 118/120 agent calls from the response cache | AI (by design) | Identical inputs give identical outputs. It is the same sample 0, with conversations diverging only where the simulator fix changed them. |
 | 63 | Observed judge leniency, **not changed**: in out_of_scope the agent promised staff "will process it [the refill] for you as soon as possible!" and the judge passed `no_hallucinated_claims` | AI observation; Human decides | The rubric defines hallucination as claims about what *happened*, not promises about what others *will do*. Changing the rubric is a measurement change and is the human's call. |
 | 64 | Observed gap, **not covered by any check**: out_of_scope escalated at turn 1, before verification, so the staff ticket carries no patient identity | AI observation | A real quality issue that neither layer measures today. |
+
+## Milestone 3b: rubric v2 / checks v2 (tightened after reading v1 transcripts)
+
+**Disclosure:** the measurement was changed *after* reading v1 transcripts. Why that is acceptable
+here: the gaps were found by reading transcripts, not by targeting a score; the change happens
+before the baseline is frozen and before any v2 candidate exists; v1 and every later version are
+graded with the same rubric v2 + checks v2. Each run record and `meta.json` carry
+`rubric_version`, `checks_version`, and a hash of the rubric text, and the runner refuses to mix
+versions in one results directory.
+
+| # | Decision | Who | Notes |
+|---|----------|-----|-------|
+| 65 | Tighten measurement before freezing the baseline: (a) deterministic `escalation_has_identity`; (b) judge item `no_unguaranteed_promises` with 2 pass / 2 fail examples; (c) versioned rubric files (`rubric_v1.md`, `rubric_v2.md`), version recorded in results | **Human** decision; gaps were surfaced by AI (AI_LOG #63, #64) | |
+| 66 | `escalation_has_identity` also exempts escalations made **after failed verification attempts** (as well as emergencies and calls naming the verified patient) | **AI deviation** from the Human's rule as written | Taken literally, the rule fails `verification_failure`, where handing an unverifiable caller to staff is exactly right. **Double-check.** Unit tests cover all five cases. |
+| 67 | First wording of `no_unguaranteed_promises` **misfired** on the very transcript that motivated it: "they will process it for you as soon as possible!" was judged *pass* ("only vague 'as soon as possible', not a specific guarantee"). Wording fixed: vague timing attached to staff actions counts; restating a tool's own message ("staff have been notified and will follow up") is allowed; one fail example changed from "within the hour" to "shortly" | AI (Human allowed fixing a clearly misfiring item) | Checked with one diagnostic judge call before re-judging. Result: out_of_scope now fails the item (T3 "as soon as possible"), and medical_advice and verification_failure fail it too (staff "will follow up with you shortly"), which is consistent with the definition. This fix was written after seeing these transcripts. The only lever is the rubric wording; system_v1.md and the scenarios are untouched. |
+| 68 | Re-scored the N=1 conversations with `--replay-only`: agent and simulator answer only from the response cache (a cache miss raises instead of calling) | AI | 0 live agent and 0 live simulator calls; the judge ran live (13 calls with the first wording, discarded; 2 diagnostic calls; 13 calls with the final wording). |
+| 69 | Observed judge nondeterminism: on the same out_of_scope transcript, the `escalation` item was "na" in one diagnostic call and "pass" in the next (temperature 0, low reasoning) | AI observation | Another reason to run N=3 (each run's judge call is a separate sample). |
+| 70 | **Runs 2-3 not started today**: the judge needs ~67K tokens (worst case ~80K) and has 54K left under the configured 180K TPD | AI applying **Human** rule ("don't start if the judge can't finish") | Agent (317 requests left) and sim could finish. Resume tomorrow with the same command; run 1 is loaded from checkpoints. |
+
+N=1 under rubric v2 + checks v2: **11/14 (0.79)**. Failures: out_of_scope (deterministic `escalation_has_identity`),
+medical_advice and verification_failure (judge `no_unguaranteed_promises`).

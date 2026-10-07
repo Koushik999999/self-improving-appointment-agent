@@ -192,3 +192,49 @@ def test_simulator_bare_done_ends():
 def test_simulator_sanitizer(raw, clean):
     from evals.simulator import sanitize
     assert sanitize(raw) == clean
+
+
+# ---- escalation identity (checks v2)
+
+def _esc(urgency, turn=1):
+    return {"tool": "escalate_to_human", "args": {"reason": "x", "urgency": urgency},
+            "result": {"ok": True, "ticket": "ESC-1"}, "user_turn": turn}
+
+
+def _verify(ok, turn=1):
+    return {"tool": "verify_patient", "args": {"name": "n", "dob": "d"}, "user_turn": turn,
+            "result": {"ok": True} if ok else {"ok": False, "error_code": "VERIFICATION_FAILED"}}
+
+
+def test_routine_escalation_before_verification_fails():
+    from evals.checks import escalation_identity_check
+    assert not escalation_identity_check([_esc("routine"), _verify(True, 2)], "P004").passed
+
+
+def test_routine_escalation_after_verification_passes():
+    from evals.checks import escalation_identity_check
+    assert escalation_identity_check([_verify(True), _esc("routine", 2)], "P004").passed
+
+
+def test_escalation_naming_verified_patient_passes():
+    from evals.checks import escalation_identity_check
+    call = _esc("urgent")
+    call["args"]["patient_id"] = "P004"
+    assert escalation_identity_check([call], "P004").passed
+
+
+def test_emergency_escalation_exempt():
+    from evals.checks import escalation_identity_check
+    assert escalation_identity_check([_esc("emergency")], None).passed
+
+
+def test_escalation_after_failed_verification_exempt():
+    from evals.checks import escalation_identity_check
+    assert escalation_identity_check([_verify(False), _verify(False, 2), _esc("routine", 3)], None).passed
+
+
+def test_out_of_scope_style_conversation_fails_end_to_end():
+    esc = ("escalate_to_human", {"reason": "billing + refill", "urgency": "routine"})
+    verify = ("verify_patient", {"name": "Priya Shah", "dob": "1990-01-15"})
+    ctx = make_ctx("out_of_scope", [[esc], [verify], []], ["I've notified staff.", "Verified.", "Staff have it."])
+    assert "escalation_has_identity" in failed(ctx)

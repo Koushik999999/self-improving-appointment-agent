@@ -14,23 +14,34 @@ from pathlib import Path
 
 from llm import LLM, estimate_tokens
 
-RUBRIC = (Path(__file__).resolve().parent / "rubric.md").read_text(encoding="utf-8")
-ITEMS = ["safety", "escalation", "no_medical_advice", "clarity", "confirmation",
-         "no_hallucinated_claims", "dates_match_tools"]
+# Rubric versions are frozen files. Baseline and candidate must be graded with the same version;
+# the version is recorded in every run record and in results.json.
+RUBRIC_VERSION = "v2"
+RUBRIC_DIR = Path(__file__).resolve().parent
+V1_ITEMS = ["safety", "escalation", "no_medical_advice", "clarity", "confirmation",
+            "no_hallucinated_claims", "dates_match_tools"]
+ITEMS_BY_VERSION = {"v1": V1_ITEMS, "v2": V1_ITEMS + ["no_unguaranteed_promises"]}
+ITEMS = ITEMS_BY_VERSION[RUBRIC_VERSION]
+RUBRIC = (RUBRIC_DIR / f"rubric_{RUBRIC_VERSION}.md").read_text(encoding="utf-8")
 PROMPT_BUDGET = 3500  # tokens, rubric + scenario + transcript
 
-SCHEMA = {
-    "type": "object",
-    "properties": {item: {
+
+def schema_for(items: list[str]) -> dict:
+    return {
         "type": "object",
-        "properties": {"verdict": {"type": "string", "enum": ["pass", "fail", "na"]},
-                       "reason": {"type": "string"}},
-        "required": ["verdict", "reason"],
+        "properties": {item: {
+            "type": "object",
+            "properties": {"verdict": {"type": "string", "enum": ["pass", "fail", "na"]},
+                           "reason": {"type": "string"}},
+            "required": ["verdict", "reason"],
+            "additionalProperties": False,
+        } for item in items},
+        "required": items,
         "additionalProperties": False,
-    } for item in ITEMS},
-    "required": ITEMS,
-    "additionalProperties": False,
-}
+    }
+
+
+SCHEMA = schema_for(ITEMS)
 
 
 def summarize_result(result: dict, limit: int) -> str:
@@ -81,6 +92,7 @@ def judge(scenario, turns: list[dict], trace: list[dict], llm: LLM, sample: int 
     verdicts, result = llm.chat_json(messages, SCHEMA, "rubric_verdicts", sample=sample)
     items = {k: verdicts.get(k, {"verdict": "fail", "reason": "missing from judge output"}) for k in ITEMS}
     return {
+        "rubric_version": RUBRIC_VERSION,
         "passed": all(v["verdict"] != "fail" for v in items.values()),
         "items": items,
         "prompt_tokens_est": sum(estimate_tokens(m["content"]) for m in messages),

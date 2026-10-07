@@ -126,6 +126,10 @@ class QuotaExhausted(Exception):
     """Daily quota is used up (local ledger or provider's per-day 429). Stop and resume later."""
 
 
+class CacheMiss(Exception):
+    """Replay mode: the request is not in the response cache, and live calls are disabled."""
+
+
 class MalformedToolCall(Exception):
     """Provider rejected the model's own tool-call output (e.g. Groq 400 tool_use_failed)."""
 
@@ -289,13 +293,14 @@ class ChatResult:
 
 
 class LLM:
-    def __init__(self, role: str, use_cache: bool = True):
+    def __init__(self, role: str, use_cache: bool = True, cache_only: bool = False):
         self.cfg = role_config(role)
         problems = self.cfg.problems()
         if problems:
             raise RuntimeError("; ".join(problems))
         self.role = role
         self.use_cache = use_cache
+        self.cache_only = cache_only  # replay mode: never make a live call
         self.client = OpenAI(base_url=self.cfg.base_url, api_key=self.cfg.api_key,
                              max_retries=0, timeout=env_int("LLM_TIMEOUT", 60))
         self.max_retries = env_int("LLM_MAX_RETRIES", 6)
@@ -330,6 +335,8 @@ class LLM:
             bump(self.role, "cache_hits")
             return ChatResult(data["message"], data["usage"], True, 0.0, data.get("finish_reason"))
 
+        if self.cache_only:
+            raise CacheMiss(f"{self.role}: request not in cache (replay mode, no live calls)")
         est = estimate_tokens(request) + (max_tokens or 1024)
         self.ledger.check(self.cfg, est)
         resp, latency = self._call_with_retries(request, est)

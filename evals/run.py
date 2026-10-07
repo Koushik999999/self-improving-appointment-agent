@@ -30,7 +30,7 @@ from clinic.faults import FaultInjector
 from llm import LLM, QuotaExhausted, env_int, role_config, stats_snapshot
 
 from . import judge as judge_mod
-from .checks import Context, run_checks
+from .checks import CHECKS_VERSION, Context, run_checks
 from .scenario import load_scenarios
 from .simulator import Patient
 
@@ -71,12 +71,14 @@ def run_conversation(sc, sample: int, prompt: str, tools: str, llms: dict, judge
 
     return {
         "scenario": sc.id, "set": sc.set, "sample": sample, "passed": passed,
+        "rubric_version": judge_mod.RUBRIC_VERSION, "checks_version": CHECKS_VERSION,
         "deterministic": {"passed": det_pass, "checks": [c.to_dict() for c in checks]},
         "judge": judged, "judge_skipped": skipped,
         "turns": turns,
         "trace": [{**t, "args": t["args"]} for t in agent.tools.trace],
         "final_state": agent.state.to_dict(),
         "faults_fired": faults.fired,
+        "db": {"initial": initial, "final": ctx.final},
         "stats": {"agent_llm_calls": agent.llm_calls_total, "agent_tokens": agent.tokens,
                   "sim_llm_calls": patient.llm_calls, "sim_lines_sanitized": patient.sanitized,
                   "malformed_tool_calls": malformed,
@@ -129,6 +131,7 @@ def summarize(records: list[dict], meta: dict) -> dict:
 def summary_markdown(summary: dict) -> str:
     m = summary["meta"]
     lines = [f"# Eval: {m['prompt']} + {m['tools']}", "",
+             f"Rubric {m.get('rubric_version', 'v1')}, deterministic checks {m.get('checks_version', 'v1')}.", "",
              f"Models: agent `{m['models']['agent']}`, sim `{m['models']['sim']}`, judge `{m['models']['judge']}`. "
              f"N={m['n']} per scenario.", ""]
     for set_name in ("main", "heldout"):
@@ -170,6 +173,9 @@ def main(argv=None):
     ap.add_argument("--concurrency", type=int, default=None)
     ap.add_argument("--dry-run", action="store_true", help="estimate calls/tokens/time/quota; no API calls")
     ap.add_argument("--fresh", action="store_true", help="ignore existing checkpoints in --out")
+    ap.add_argument("--replay-only", action="store_true",
+                    help="agent and simulator answer only from the response cache (no live calls); "
+                         "used to re-score existing conversations under new checks/rubric")
     args = ap.parse_args(argv)
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
@@ -179,23 +185,29 @@ def main(argv=None):
         print_report(load_scenarios("main", ids), load_scenarios("heldout", ids), args.prompt, args.tools)
         return 0
     return run_eval(load_scenarios(args.set, ids), args.n, args.prompt, args.tools,
-                    out=args.out, judge_all=args.judge_all, concurrency=args.concurrency, fresh=args.fresh)
+                    out=args.out, judge_all=args.judge_all, concurrency=args.concurrency, fresh=args.fresh,
+                    replay_only=args.replay_only)
 
 
-def run_eval(scenarios, n, prompt, tools, out=None, judge_all=False, concurrency=None, fresh=False) -> int:
+def run_eval(scenarios, n, prompt, tools, out=None, judge_all=False, concurrency=None, fresh=False,
+             replay_only=False) -> int:
     out_dir = Path(out) if out else ROOT / "results" / f"{Path(prompt).stem}__{Path(tools).stem}"
     runs_dir = out_dir / "runs"
     runs_dir.mkdir(parents=True, exist_ok=True)
     meta = {"prompt": str(Path(prompt).relative_to(ROOT)) if Path(prompt).is_absolute() else prompt,
             "tools": str(Path(tools).relative_to(ROOT)) if Path(tools).is_absolute() else tools,
             "prompt_hash": file_hash(prompt), "tools_hash": file_hash(tools), "n": n,
-            "models": {r: role_config(r).model for r in ("agent", "sim", "judge")}}
+            "models": {r: role_config(r).model for r in ("agent", "sim", "judge")},
+            "rubric_version": judge_mod.RUBRIC_VERSION, "checks_version": CHECKS_VERSION,
+            "rubric_hash": hashlib.sha256(judge_mod.RUBRIC.encode("utf-8")).hexdigest()[:12],
+            "checks_hash": file_hash(ROOT / "evals" / "checks.py")}
 
     meta_path = out_dir / "meta.json"
     if meta_path.exists() and not fresh:
         old = json.loads(meta_path.read_text(encoding="utf-8"))
-        if (old["prompt_hash"], old["tools_hash"], old["models"]) != (meta["prompt_hash"], meta["tools_hash"], meta["models"]):
-            print(f"{out_dir} holds results for a different prompt/tools/model version. "
+        keys = ("prompt_hash", "tools_hash", "models", "rubric_version", "checks_version", "rubric_hash")
+        if any(old.get(k) != meta[k] for k in keys):
+            print(f"{out_dir} holds results for a different prompt/tools/model/rubric/checks version. "
                   "Use --out for a new directory or --fresh to discard them.")
             return 2
     if fresh:
@@ -203,9 +215,9 @@ def run_eval(scenarios, n, prompt, tools, out=None, judge_all=False, concurrency
             f.unlink()
     meta_path.write_text(json.dumps(meta, indent=2), encoding="utf-8")
 
-    llms = {"agent": LLM("agent"), "judge": LLM("judge")}
+    llms = {"agent": LLM("agent", cache_only=replay_only), "judge": LLM("judge")}
     if any(sc.llm_turns or sc.then == "llm" for sc in scenarios):
-        llms["sim"] = LLM("sim")
+        llms["sim"] = LLM("sim", cache_only=replay_only)
 
     jobs, records = [], []
     for sample in range(n):

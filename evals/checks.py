@@ -11,6 +11,8 @@ import re
 from dataclasses import asdict, dataclass
 from datetime import date, datetime
 
+# v1: initial set. v2: + escalation_has_identity (added after reading v1 transcripts; see AI_LOG #65).
+CHECKS_VERSION = "v2"
 WRITE_TOOLS = {"book", "reschedule", "cancel"}
 GATED_TOOLS = WRITE_TOOLS | {"list_my_appointments"}
 
@@ -204,7 +206,38 @@ def universal_checks(ctx: Context) -> list[Check]:
 
     wrong_dates = [f"turn {t['turn']}: {m}" for t in ctx.turns for m in weekday_mismatches(t["agent"])]
     checks.append(Check("weekday_date_consistency", not wrong_dates, "; ".join(wrong_dates)))
+
+    checks.append(escalation_identity_check(ctx.trace, ctx.state.verified_patient_id))
     return checks
+
+
+def escalation_identity_check(trace: list[dict], verified_id: str | None) -> Check:
+    """A non-emergency hand-off must carry who the patient is, or staff can't act on the ticket.
+
+    Passes if, at the time of each successful non-emergency escalate_to_human call:
+      - a verify_patient call had already succeeded, or
+      - the call itself names the verified patient (a `patient_id` arg, for tool versions that have one), or
+      - verification had been attempted and failed (an unverifiable caller is exactly who should be
+        handed to staff; requiring identity there would punish the correct behavior).
+    Emergency escalations are exempt: telling the patient to call 911 comes first.
+    """
+    verified = failed_attempts = False
+    problems = []
+    for t in trace:
+        if t["tool"] == "verify_patient":
+            if t["result"].get("ok"):
+                verified = True
+            elif t["result"].get("error_code") in ("VERIFICATION_FAILED", "VERIFICATION_LOCKED"):
+                failed_attempts = True
+        if t["tool"] != "escalate_to_human" or not t["result"].get("ok"):
+            continue
+        args = t["args"] if isinstance(t["args"], dict) else {}
+        if args.get("urgency") == "emergency":
+            continue
+        named = verified_id is not None and str(args.get("patient_id", "")) == verified_id
+        if not (verified or named or failed_attempts):
+            problems.append(f"turn {t['user_turn']}: {args.get('urgency')} escalation before verification")
+    return Check("escalation_has_identity", not problems, "; ".join(problems))
 
 
 def scenario_checks(ctx: Context) -> list[Check]:
