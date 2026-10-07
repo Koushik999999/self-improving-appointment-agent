@@ -6,9 +6,19 @@ The LLM simulator only writes {llm: hint} turns and the optional free-form tail
 (`then: llm`). It must answer as the patient, briefly, and say [DONE] when the
 conversation is over.
 """
+import re
+
 from llm import LLM
 
 DONE = "[DONE]"
+# Sentences only the assistant would say. gpt-oss-20b sometimes continues past the patient's line
+# and writes the assistant's next reply ("Yes.Your appointment is confirmed..."). Those words would
+# put fake success claims into the patient's mouth, so the line is cut at the first such sentence.
+ASSISTANT_VOICE = re.compile(
+    r"^(great|perfect|wonderful|thank you for (verifying|confirming)|your (new )?appointment|"
+    r"you'?re all set|you are all set|i'?ve (booked|scheduled|cancel)|i have (booked|scheduled|cancel)|"
+    r"you'?ll receive|you will receive|let me know if|is there anything else|have a great)",
+    re.IGNORECASE)
 
 SIM_SYSTEM = """You are role-playing a PATIENT texting a clinic's scheduling assistant. Stay in character.
 
@@ -17,11 +27,13 @@ Your goal: {goal}
 
 Rules:
 - Reply with only the patient's next message: 1-2 short sentences, plain text.
+- Write ONLY the patient's words. Never write the assistant's reply or say what the assistant did.
 - Answer the assistant's questions using the facts above; never invent other facts.
 - If the assistant offers options, pick one that fits your goal.
 - If the assistant asks you to confirm details that match your goal, say yes.
 - Do not add new requests beyond your goal.
-- When your goal is done, or the assistant clearly cannot help further, reply with exactly {done}"""
+- Only after the assistant says your request is completed (or clearly says it cannot help), reply
+  with exactly {done} and nothing else. Never add {done} to a normal reply."""
 
 
 class Patient:
@@ -30,6 +42,7 @@ class Patient:
         self.llm = llm
         self.sample = sample
         self.llm_calls = 0
+        self.sanitized = 0     # lines cut because the simulator started speaking as the assistant
 
     def next_line(self, turn: int, transcript: list[dict]) -> str | None:
         """turn is 0-based. transcript: [{"patient": str, "agent": str}, ...]. None ends the conversation."""
@@ -58,6 +71,25 @@ class Patient:
         result = self.llm.chat(messages, sample=self.sample, temperature=0.3)
         self.llm_calls += 1
         text = result.content.strip()
-        if not text or DONE in text:
+        if text == DONE:
             return None
-        return text
+        # A marker glued to a real reply ("I'll take the 10:00 slot.[DONE]") is premature: the
+        # model predicts the goal will be met, but the agent may still need a confirmation.
+        # Send the reply and ignore the marker; a bare [DONE] (or max_turns) ends the conversation.
+        text = text.replace(DONE, "").strip()
+        clean = sanitize(text)
+        if clean != text:
+            self.sanitized += 1
+        return clean or None
+
+
+def sanitize(text: str) -> str:
+    """Keep the patient's sentences; drop everything from the first assistant-voice sentence on.
+    Splits even without a space after the period ("works.Great! I've...")."""
+    sentences = re.split(r"(?<=[.!?])\s*(?=[A-Z])", text)
+    kept = []
+    for i, sentence in enumerate(sentences):
+        if i > 0 and ASSISTANT_VOICE.match(sentence.strip()):
+            break
+        kept.append(sentence.strip())
+    return " ".join(kept).strip()

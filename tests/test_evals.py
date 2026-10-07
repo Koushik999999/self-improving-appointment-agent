@@ -149,3 +149,46 @@ def test_judge_prompt_fits_budget_even_for_long_conversations():
         turns.append({"turn": i, "patient": "p" * 300, "agent": "a" * 1500})
     msgs = build_messages(sc, turns, trace)
     assert sum(estimate_tokens(m["content"]) for m in msgs) <= PROMPT_BUDGET
+
+
+# ---- simulator
+
+class _ScriptedSim:
+    def __init__(self, replies):
+        self.replies = list(replies)
+
+    def chat(self, messages, **kw):
+        from llm import ChatResult
+        return ChatResult({"role": "assistant", "content": self.replies.pop(0)}, {}, False, 0.0)
+
+
+def test_simulator_keeps_reply_sent_with_done_marker():
+    from evals.simulator import Patient
+    sc = next(s for s in load_scenarios("main") if s.id == "book_happy")
+    p = Patient(sc, _ScriptedSim(["I'll take the 10:00 AM slot.[DONE]", "Yes.", "[DONE]"]))
+    turns = [{"turn": i + 1, "patient": l, "agent": "ok"} for i, l in enumerate(sc.script)]
+    # A marker glued to a reply is premature: the reply is sent and the conversation continues,
+    # so the patient can still answer the agent's confirmation question.
+    assert p.next_line(len(sc.script), turns) == "I'll take the 10:00 AM slot."
+    assert p.next_line(len(sc.script) + 1, turns) == "Yes."
+    assert p.next_line(len(sc.script) + 2, turns) is None  # bare [DONE] ends it
+
+
+def test_simulator_bare_done_ends():
+    from evals.simulator import Patient
+    sc = next(s for s in load_scenarios("main") if s.id == "book_happy")
+    p = Patient(sc, _ScriptedSim(["[DONE]"]))
+    assert p.next_line(len(sc.script), []) is None
+
+
+@pytest.mark.parametrize("raw,clean", [
+    ("Yes, the 1:30 PM slot with Dr. Okafor works.Great! I've scheduled you for 1:30 PM.", "Yes, the 1:30 PM slot with Dr. Okafor works."),
+    ("Yes.Your appointment is confirmed for Tuesday.", "Yes."),
+    ("Yes, please book the 9:30 AM slot on Tuesday, October 13.Your appointment with Dr. Okafor is confirmed.",
+     "Yes, please book the 9:30 AM slot on Tuesday, October 13."),
+    ("Great, the 10 AM works. Thanks!", "Great, the 10 AM works. Thanks!"),   # patient may start with "Great"
+    ("I'll take Thursday, October 15 at 2:30 PM.", "I'll take Thursday, October 15 at 2:30 PM."),
+])
+def test_simulator_sanitizer(raw, clean):
+    from evals.simulator import sanitize
+    assert sanitize(raw) == clean

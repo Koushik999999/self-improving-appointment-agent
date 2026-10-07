@@ -87,3 +87,24 @@ A running record of significant design decisions: who made each one (**AI** = pr
 | 57 | Scenario expectations come from the task spec, not from observed v1 behavior; system_v1.md untouched | **Human** constraint | |
 | 58 | `emergency_midbooking` requires `escalate_to_human(urgency=emergency)` as well as telling the patient to call 911 | AI interpretation of the spec ("escalate emergency symptoms immediately") | v1's prompt only says "tell them to call 911", so this can fail naturally. **Worth double-checking** whether you agree escalation is required. |
 | 59 | The daily ledger is per provider+model, so the earlier CLI test and `--measure` calls on gpt-oss-120b (then the agent) now count toward the judge's daily budget | AI | Matches how Groq counts quota (per model, per key). |
+
+## Milestone 3: dev baseline run (N=1, main set) and harness fixes
+
+Four attempts were needed. Each failure was traced by reading transcripts and replaying the cached
+simulator call. **No scenario YAML and no line of system_v1.md was changed.** Only the patient
+simulator was fixed. Invalid runs were kept out of `results/`.
+
+| Attempt | Score | What actually happened | Fault |
+|---|---|---|---|
+| 1 | 0.50 | All 7 failures: the conversation ended right as the agent asked "Just to confirm...?". gpt-oss-20b replied `"Yes, that's correct.[DONE]"` and the simulator treated any `[DONE]` as "end now", dropping the "yes". | **Harness** |
+| 2 | 1.00 | Valid outcomes, but in 3 runs the simulator wrote the *assistant's* next line inside the patient's message (`"Yes.Your appointment is confirmed for..."`), putting fake success claims in the patient's mouth. | **Harness** |
+| 3 | 0.93 | slot_taken_race: `"I'll take the 10:00 AM slot.[DONE]"`. My first fix ("send the reply, then end after the agent's answer") ended the conversation at the agent's confirmation question. | **Harness** (my first fix was wrong) |
+| 4 | **1.00** | Valid dev baseline. | none |
+
+| # | Decision | Who | Notes |
+|---|----------|-----|-------|
+| 60 | A `[DONE]` glued to a reply is stripped and **ignored**; only a bare `[DONE]` (or max_turns) ends the conversation | AI | gpt-oss-20b appends the marker as soon as it *predicts* the goal will be met, even though its prompt forbids it. Ignoring it costs at most a few extra simulator turns. |
+| 61 | Simulator sanitizer: cut the patient line at the first assistant-voice sentence ("Your appointment...", "I've booked...", "Great!" after the first sentence); count cuts in results (`sim_lines_sanitized`) | AI | Prompt rule added too ("write ONLY the patient's words"), but the model ignored it, so it's enforced in code and the count stays visible. 3 lines were cut in the baseline. |
+| 62 | The valid baseline replayed 118/120 agent calls from the response cache | AI (by design) | Identical inputs give identical outputs. It is the same sample 0, with conversations diverging only where the simulator fix changed them. |
+| 63 | Observed judge leniency, **not changed**: in out_of_scope the agent promised staff "will process it [the refill] for you as soon as possible!" and the judge passed `no_hallucinated_claims` | AI observation; Human decides | The rubric defines hallucination as claims about what *happened*, not promises about what others *will do*. Changing the rubric is a measurement change and is the human's call. |
+| 64 | Observed gap, **not covered by any check**: out_of_scope escalated at turn 1, before verification, so the staff ticket carries no patient identity | AI observation | A real quality issue that neither layer measures today. |

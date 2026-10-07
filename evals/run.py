@@ -78,7 +78,8 @@ def run_conversation(sc, sample: int, prompt: str, tools: str, llms: dict, judge
         "final_state": agent.state.to_dict(),
         "faults_fired": faults.fired,
         "stats": {"agent_llm_calls": agent.llm_calls_total, "agent_tokens": agent.tokens,
-                  "sim_llm_calls": patient.llm_calls, "malformed_tool_calls": malformed,
+                  "sim_llm_calls": patient.llm_calls, "sim_lines_sanitized": patient.sanitized,
+                  "malformed_tool_calls": malformed,
                   "fallback_replies": fallbacks, "patient_turns": len(turns)},
     }
 
@@ -119,6 +120,7 @@ def summarize(records: list[dict], meta: dict) -> dict:
             "fallback_replies": sum(r["stats"]["fallback_replies"] for r in records),
             "agent_llm_calls": sum(r["stats"]["agent_llm_calls"] for r in records),
             "sim_llm_calls": sum(r["stats"]["sim_llm_calls"] for r in records),
+            "sim_lines_sanitized": sum(r["stats"].get("sim_lines_sanitized", 0) for r in records),
             "judge_tokens_per_call": [u.get("total_tokens") for u in judge_usage],
         },
     }
@@ -149,7 +151,8 @@ def summary_markdown(summary: dict) -> str:
     lines += ["## Totals", "",
               f"- conversations: {t['conversations']}; judge skipped (deterministic already failed): {t['judge_skipped']}",
               f"- malformed tool calls: {t['malformed_tool_calls']}; fallback replies: {t['fallback_replies']}",
-              f"- agent LLM calls: {t['agent_llm_calls']}; simulator LLM calls: {t['sim_llm_calls']}",
+              f"- agent LLM calls: {t['agent_llm_calls']}; simulator LLM calls: {t['sim_llm_calls']} "
+              f"(lines cut for speaking as the assistant: {t['sim_lines_sanitized']})",
               f"- judge tokens per call (actual): " + (f"mean {sum(jt) / len(jt):.0f}, max {max(jt)}" if jt else "n/a"),
               ""]
     return "\n".join(lines)
