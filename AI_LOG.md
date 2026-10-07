@@ -165,3 +165,11 @@ rubric v2 + checks v2.
 | 88 | Loop `--dry-run` uses the **observed** judge cost when baseline judgments exist (2,392 tokens/call over 13 calls) instead of the generic assumption (which said 88K vs ~62K for the 26 pending runs), builds the real improver prompt offline to size it (~3.2K tokens), and flags that a full candidate eval with held-out (agent ~540 calls) needs 2 days at RPD 450 | AI | |
 | 89 | Shell heredocs mangled escapes twice (`\b` -> backspace byte, `\n` -> newline) in inline Python edits; switched to direct file edits for anything with escapes and added a repo-wide scan for control characters | AI (own process bug) | The unit tests and a syntax error caught both. |
 | 90 | README (setup, commands, layout, scoring, **judge blind spots table**, assumptions) and DESIGN_NOTE skeleton written. Numbers left as TODO until real results exist; "AI vs judgment" section left for the human | **Human** instruction | |
+
+## Deadline plan: judge swap attempt (blocked)
+
+| # | Decision | Who | Notes |
+|---|----------|-----|-------|
+| 91 | Swap the judge to Groq `qwen/qwen3.8-27b` (fresh 200K TPD) and re-judge all 42 cached baseline conversations, so baseline and v2 share one judge | **Human** | Failed: `403 The model qwen/qwen3.8-27b is blocked at the organization level` (needs an org admin to enable it in the Groq console). |
+| 92 | Fallback per the Human's instruction: judge = `gemini-3.6-flash` with `reasoning_effort=none` (the smoke test passed: strict JSON, ~1.5K tokens, same verdict on the out_of_scope promise; `low` gave 503s, `default` is invalid). Improver given its own settings (low reasoning, 6K max tokens), because it otherwise inherits the judge's 1,200-token cap | **Human** fallback; AI settings | Caveat: the judge is now in the same family as the agent (Gemini), which weakens the independence chosen in #3/#26. |
+| 93 | **Blocked**: gemini-3.6-flash hit its *daily* quota (429) after 8 judge calls (14 retries). It is also the improver's model, so the improver is blocked too. The partial re-judge was discarded and `results/baseline_v1` restored from git; the 8 Gemini judgments stay in the response cache | AI stopped, per Human rule | Remaining today (local ledger): gpt-oss-120b 54K tokens, gpt-oss-20b ~105K tokens, agent 93 requests (the reduced loop needs ~175 agent calls). |
