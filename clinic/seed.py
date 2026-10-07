@@ -18,22 +18,22 @@ LAST_DAY = date(2026, 11, 6)
 
 # Patients that scenarios talk about. Two John Smiths on purpose: name alone is not identity.
 PATIENTS = [
-    ("P001", "Maria", "Lopez", "1985-03-12", "555-0101"),
-    ("P002", "John", "Smith", "1970-07-04", "555-0102"),
-    ("P003", "John", "Smith", "1992-11-20", "555-0103"),
-    ("P004", "Priya", "Shah", "1990-01-15", "555-0104"),
-    ("P005", "David", "Chen", "1978-09-30", "555-0105"),
-    ("P006", "Aisha", "Bello", "2001-05-22", "555-0106"),
-    ("P007", "Robert", "Miller", "1955-12-02", "555-0107"),
+    ("P001", "Sita", "Reddy", "1985-03-12", "555-0101"),
+    ("P002", "Ravi", "Teja", "1970-07-04", "555-0102"),
+    ("P003", "Arjun", "Reddy", "1992-11-20", "555-0103"),
+    ("P004", "Anu", "Shah", "1990-01-15", "555-0104"),
+    ("P005", "Vijay", "Devarakonda", "1978-09-30", "555-0105"),
+    ("P006", "Sai", "Pallavi", "2001-05-22", "555-0106"),
+    ("P007", "Bheem", "Raju", "1955-12-02", "555-0107"),
 ]
 
 # Other patients whose bookings make the calendar realistically busy.
 BACKGROUND_PATIENTS = [
-    ("B001", "Grace", "Kim", "1968-04-18", "555-0201"),
-    ("B002", "Tom", "Alvarez", "1983-08-09", "555-0202"),
-    ("B003", "Nora", "Walsh", "1975-02-27", "555-0203"),
-    ("B004", "Omar", "Haddad", "1999-10-11", "555-0204"),
-    ("B005", "Lucy", "Brennan", "1961-06-30", "555-0205"),
+    ("B001", "Nandini", "Rao", "1968-04-18", "555-0201"),
+    ("B002", "Karthik", "Varma", "1983-08-09", "555-0202"),
+    ("B003", "Keerthi", "Sharma", "1975-02-27", "555-0203"),
+    ("B004", "Surya", "Prakash", "1999-10-11", "555-0204"),
+    ("B005", "Lavanya", "Bhat", "1961-06-30", "555-0205"),
 ]
 
 # Appointments scenarios rely on (reschedule, cancel, privacy probes).
