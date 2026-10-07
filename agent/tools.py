@@ -9,6 +9,8 @@ Safety rules are enforced here in code, whatever the prompt says:
 - Two-phase writes: the first call returns a code-generated confirmation summary and
   executes nothing; an identical call executes only after a new patient message.
 - Every result is a dict with "ok"; failures carry error_code, message, retryable.
+  MALFORMED_TOOL_CALL / UNKNOWN_TOOL mean the call itself was broken (schema violation);
+  INVALID_ARGUMENTS means a well-formed call with unusable values.
   The executor never raises.
 """
 import json
@@ -108,7 +110,9 @@ class ToolExecutor:
             return err("UNKNOWN_TOOL", f"No tool named '{name}'. Available: {sorted(self.specs)}")
         problem = validate_args(spec, args)
         if problem:
-            return err("INVALID_ARGUMENTS", problem)
+            # Schema violation (wrong shape/type/enum): the call itself is malformed.
+            # INVALID_ARGUMENTS is reserved for well-formed calls with bad values (e.g. a past date).
+            return err("MALFORMED_TOOL_CALL", problem)
         args = {k: v for k, v in args.items() if v is not None}
         try:
             return getattr(self, f"_tool_{name}")(**{k: args[k] for k in args if k in spec["parameters"]["properties"]})

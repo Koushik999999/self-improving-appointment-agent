@@ -155,9 +155,9 @@ def test_cancel_own_appointment():
 
 
 @pytest.mark.parametrize("args,code", [
-    ({"name": "Maria Lopez"}, "INVALID_ARGUMENTS"),
-    ("not a dict", "INVALID_ARGUMENTS"),
-    ({"name": 5, "dob": "1985-03-12"}, "INVALID_ARGUMENTS"),
+    ({"name": "Maria Lopez"}, "MALFORMED_TOOL_CALL"),
+    ("not a dict", "MALFORMED_TOOL_CALL"),
+    ({"name": 5, "dob": "1985-03-12"}, "MALFORMED_TOOL_CALL"),
 ])
 def test_malformed_arguments(args, code):
     ex, _ = make()
@@ -169,7 +169,7 @@ def test_unknown_tool_and_bad_enum():
     assert ex.call("delete_everything", {})["error_code"] == "UNKNOWN_TOOL"
     res = ex.call("search_availability", {"appointment_type": "neurology",
                                           "start_date": "2026-10-08", "end_date": "2026-10-09"})
-    assert res["error_code"] == "INVALID_ARGUMENTS"
+    assert res["error_code"] == "MALFORMED_TOOL_CALL"
 
 
 def test_search_rejects_past_and_clamps_start():

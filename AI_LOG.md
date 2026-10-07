@@ -54,3 +54,17 @@ A running record of significant design decisions: who made each one (**AI** = pr
 | 34 | Judge/improver use strict `json_schema` output; parser reads only `content` (never `reasoning`) and strips ```json fences as a fallback | AI (from smoke-test evidence) | gpt-oss returns reasoning in a separate field (content stays clean JSON); Gemini wraps plain-prompt JSON in code fences. |
 | 35 | Smoke test makes raw calls with no retries | AI | It should report the raw state of each endpoint; retries live in llm.py. |
 | 36 | Alternative split (agent = Gemini 3.5-flash-lite, judge = Groq gpt-oss-120b) verified, including the multi-turn round trip; `.env` keeps agent on Groq for now | Human pending | Human is checking Groq's real daily token limit before choosing. |
+
+## Milestone 2: llm.py, agent loop, CLI
+
+| # | Decision | Who | Notes |
+|---|----------|-----|-------|
+| 37 | Split `MALFORMED_TOOL_CALL` (schema violation: bad JSON, wrong type/enum, missing field, unknown tool) from `INVALID_ARGUMENTS` (well-formed call with an unusable value, e.g. a past date or a DOB in the wrong format) | AI | Only real malformations count toward the malformed metric and the retry-once rule. A patient giving an odd date is normal conversation, not a model failure. |
+| 38 | After a malformed output: structured error, one more chance; a 2nd in a row ends the turn with a fixed safe reply ("call the front desk"). Empty replies count as malformed. Max 8 model calls per patient turn | AI, implementing Human's retry-once rule | Bounded cost per turn under tight quotas; the agent never loops on a broken model. |
+| 39 | Groq's 400 `tool_use_failed` (provider rejects the model's own tool-call output) is mapped to `MalformedToolCall`, under the same retry-once rule | AI | Known gpt-oss-on-Groq behavior; without this it would surface as a hard crash. |
+| 40 | A per-day 429 raises `QuotaExhausted` immediately instead of retrying | AI | Backing off for hours on a daily cap wastes the run; checkpoints resume later. |
+| 41 | The state block is rendered into the system prompt on every call (read-only) | AI | The model always sees verified / pending-confirmation / done, so it doesn't have to infer them from long history. |
+| 42 | Agent uses the provider's default temperature; judge uses 0 | AI | The eval should measure the agent's real stochastic behavior (that's why N runs); the judge should be as repeatable as possible. |
+| 43 | Token estimate (~4 chars/token) is deliberately conservative: estimated 1,144 vs measured 829 prompt tokens on gpt-oss-120b for the fixed part | AI | Over-estimating is safe for TPM reservation (settled with real usage after the call). `--dry-run` will report the estimate and note the measured calibration. |
+| 44 | CLI disables the response cache | AI | Live chat should get fresh replies. |
+| 45 | `system_v1.md` written as a natural, compact first draft (about 290 tokens) | AI | No planted bugs. Written the way a reasonable first version would be: it states the main rules but says nothing yet about prompt injection, tool errors/timeouts, ambiguous dates, what to do after failed verification, or stopping a booking when an emergency comes up. The eval should show which of those gaps matter. |
